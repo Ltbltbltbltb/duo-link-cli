@@ -16,7 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from duo_link_cli.channel import Channel
-from duo_link_cli.cli import main
+from duo_link_cli.cli import is_pair_message, is_repl_incoming, main
 
 
 class DuoLinkCliTests(unittest.TestCase):
@@ -71,6 +71,27 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(status["messages"], 1)
         self.assertEqual(status["agents"], ["claude", "codex"])
 
+    def test_send_persists_jsonl_record_with_message_id(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "ola",
+            "jsonl",
+        )
+
+        raw_line = (self.channel_dir / "chat.log").read_text(encoding="utf-8").strip()
+        payload = json.loads(raw_line)
+
+        self.assertIn("id", payload)
+        self.assertEqual(payload["from"], "codex")
+        self.assertEqual(payload["to"], "claude")
+        self.assertEqual(payload["text"], "ola jsonl")
+
     def test_recv_returns_message_sent_later(self) -> None:
         self.run_cli("init", str(self.channel_dir))
 
@@ -96,6 +117,63 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertIn("codex -> claude: ping atrasado", stdout)
         self.assertEqual(stderr, "")
 
+    def test_recv_consumes_pending_backlog_for_agent(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "mensagem pendente")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("codex -> claude: mensagem pendente", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_recv_persists_progress_per_agent_across_calls(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "primeira pendente")
+        channel.send("codex", "claude", "segunda pendente")
+
+        first_exit, first_stdout, first_stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+        )
+        second_exit, second_stdout, second_stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+        )
+
+        self.assertEqual(first_exit, 0)
+        self.assertIn("codex -> claude: primeira pendente", first_stdout)
+        self.assertEqual(first_stderr, "")
+
+        self.assertEqual(second_exit, 0)
+        self.assertIn("codex -> claude: segunda pendente", second_stdout)
+        self.assertEqual(second_stderr, "")
+
     def test_history_json_filters_messages_for_agent(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         channel = Channel(self.channel_dir)
@@ -118,6 +196,19 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(lines[0]["msg"], "primeira")
         self.assertEqual(lines[1]["msg"], "segunda")
 
+    def test_history_rejects_negative_limit(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "-n",
+            "-1",
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("limit", stderr.lower())
+
     def test_status_json_reports_last_message(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         Channel(self.channel_dir).send("codex", "claude", "ultima")
@@ -134,6 +225,48 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(payload["messages"], 1)
         self.assertEqual(payload["agents"], ["claude", "codex"])
         self.assertIn("codex -> claude: ultima", payload["last"])
+
+    def test_status_does_not_create_channel_when_missing(self) -> None:
+        missing_channel = self.channel_dir
+        exit_code, stdout, stderr = self.run_cli(
+            "status",
+            "--channel",
+            str(missing_channel),
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("channel", stderr.lower())
+        self.assertFalse(missing_channel.exists())
+
+    def test_recv_rejects_non_positive_timeout(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        exit_code, stdout, stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--timeout",
+            "0",
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("timeout", stderr.lower())
+
+    def test_recv_rejects_non_positive_poll_interval(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        exit_code, stdout, stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--poll-interval",
+            "0",
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("poll", stderr.lower())
 
     def test_context_set_and_show_roundtrip(self) -> None:
         self.run_cli("init", str(self.channel_dir))
@@ -158,6 +291,46 @@ class DuoLinkCliTests(unittest.TestCase):
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(stdout, "contexto de teste")
+
+    def test_context_show_does_not_create_channel_when_missing(self) -> None:
+        missing_channel = self.channel_dir
+        exit_code, stdout, stderr = self.run_cli(
+            "context",
+            "--channel",
+            str(missing_channel),
+            "show",
+            "codex",
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("context", stderr.lower())
+        self.assertFalse(missing_channel.exists())
+
+    def test_repl_scope_helpers_filter_only_the_selected_peer(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "ida valida")
+        channel.send("claude", "codex", "volta valida")
+        channel.send("bot", "codex", "intrusa")
+        channel.send("codex", "bot", "outra intrusa")
+
+        history = channel.history()
+        pair_messages = [message.text for message in history if is_pair_message(message, "codex", "claude")]
+        incoming_messages = [message.text for message in history if is_repl_incoming(message, "codex", "claude")]
+
+        self.assertEqual(pair_messages, ["ida valida", "volta valida"])
+        self.assertEqual(incoming_messages, ["volta valida"])
+
+    def test_init_rejects_dir_and_channel_together(self) -> None:
+        exit_code, stdout, stderr = self.run_cli(
+            "init",
+            str(self.channel_dir),
+            "--channel",
+            str(self.channel_dir / "outro"),
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("channel", stderr.lower())
 
 
 if __name__ == "__main__":

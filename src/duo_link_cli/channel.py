@@ -86,6 +86,12 @@ class Channel:
                     encoding="utf-8",
                 )
 
+    def require_log(self) -> None:
+        if not self.log_path.exists():
+            raise FileNotFoundError(
+                f"channel log not found: {self.log_path}. Run 'duo-link init' first."
+            )
+
     def cursor_path(self, agent: str) -> Path:
         return self.root / f".cursor.{agent}"
 
@@ -111,8 +117,10 @@ class Channel:
         return path
 
     def read_context(self, agent: str) -> str:
-        self.init()
-        return self.context_path(agent).read_text(encoding="utf-8")
+        path = self.context_path(agent)
+        if not path.exists():
+            raise FileNotFoundError(f"context not found for agent '{agent}': {path}")
+        return path.read_text(encoding="utf-8")
 
     def send(self, sender: str, recipient: str, text: str) -> Message:
         self.init()
@@ -140,7 +148,7 @@ class Channel:
         )
 
     def read_lines(self) -> list[str]:
-        self.init()
+        self.require_log()
         return self.log_path.read_text(encoding="utf-8").splitlines()
 
     def history(self, limit: int = 0, agent: str | None = None) -> list[Message]:
@@ -174,7 +182,7 @@ class Channel:
     def recv(
         self, recipient: str, timeout: float = 60, poll_interval: float = 0.5
     ) -> Message | None:
-        self.init()
+        self.require_log()
         cursor = self.read_cursor(recipient)
         lines = self.read_lines()
 
@@ -206,7 +214,7 @@ class Channel:
         include_all: bool = False,
         poll_interval: float = 0.5,
     ) -> Iterator[Message]:
-        self.init()
+        self.require_log()
         seen = len(self.read_lines())
         while True:
             self.wait_for_change(10 if HAS_INOTIFY else poll_interval)
@@ -255,7 +263,11 @@ class Channel:
             recipient = obj.get("to", "")
             text = obj.get("text", "")
             return Message(
-                id=msg_id, ts=ts, sender=sender, recipient=recipient, text=text,
+                id=msg_id,
+                ts=ts,
+                sender=sender,
+                recipient=recipient,
+                text=text,
                 raw=f"[{ts}] {sender} -> {recipient}: {text}",
             )
         except (json.JSONDecodeError, TypeError):

@@ -10,6 +10,7 @@ build/
 # channel runtime data (not part of the package)
 duo-link/chat.log
 duo-link/.chat.lock
+duo-link/.cursor.*
 duo-link/context.*.md
 
 # virtual environments

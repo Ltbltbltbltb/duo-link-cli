@@ -31,9 +31,8 @@ def resolve_identity(explicit: str | None) -> str:
 
 
 def is_pair_message(message, self_id: str, peer_id: str) -> bool:
-    return (
-        (message.sender == self_id and message.recipient == peer_id)
-        or (message.sender == peer_id and message.recipient == self_id)
+    return (message.sender == self_id and message.recipient == peer_id) or (
+        message.sender == peer_id and message.recipient == self_id
     )
 
 
@@ -154,6 +153,12 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 
 def cmd_recv(args: argparse.Namespace) -> int:
+    if args.timeout <= 0:
+        print("error: --timeout must be positive", file=sys.stderr)
+        return 2
+    if args.poll_interval <= 0:
+        print("error: --poll-interval must be positive", file=sys.stderr)
+        return 2
     channel = resolve_channel(args.channel)
     recipient = resolve_identity(args.as_id)
     message = channel.recv(
@@ -189,6 +194,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_history(args: argparse.Namespace) -> int:
+    if args.n < 0:
+        print("error: -n limit must be >= 0", file=sys.stderr)
+        return 2
     channel = resolve_channel(args.channel)
     agent = resolve_identity(args.as_id) if args.as_id else None
     for message in channel.history(limit=args.n, agent=agent):
@@ -248,7 +256,9 @@ def cmd_repl(args: argparse.Namespace) -> int:
 
     def receive_loop() -> None:
         try:
-            for message in channel.stream(agent=sender, poll_interval=args.poll_interval):
+            for message in channel.stream(
+                agent=sender, poll_interval=args.poll_interval
+            ):
                 if stop_event.is_set():
                     break
                 if not is_repl_incoming(message, sender, args.to):
