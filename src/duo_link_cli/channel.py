@@ -208,8 +208,42 @@ class Channel:
         self.require_log()
         return self.log_path.read_text(encoding="utf-8").splitlines()
 
+    def export_jsonl(self, session: str | None = None) -> str:
+        """Export all messages as clean JSONL string."""
+        messages = self.history(session=session)
+        lines = [json.dumps(m.as_dict(), ensure_ascii=False) for m in messages]
+        return "\n".join(lines) + "\n" if lines else ""
+
+    def stats(self) -> dict[str, object]:
+        """Per-agent statistics."""
+        messages = self.history()
+        acked_ids = self.get_acked_ids()
+        by_sender: dict[str, int] = {}
+        by_recipient: dict[str, int] = {}
+        for m in messages:
+            by_sender[m.sender] = by_sender.get(m.sender, 0) + 1
+            by_recipient[m.recipient] = by_recipient.get(m.recipient, 0) + 1
+        agents = sorted(set(by_sender) | set(by_recipient))
+        per_agent = {}
+        for a in agents:
+            per_agent[a] = {
+                "sent": by_sender.get(a, 0),
+                "received": by_recipient.get(a, 0),
+            }
+        return {
+            "total_messages": len(messages),
+            "total_acked": len(acked_ids),
+            "agents": per_agent,
+        }
+
     def history(
-        self, limit: int = 0, agent: str | None = None, session: str | None = None
+        self,
+        limit: int = 0,
+        agent: str | None = None,
+        session: str | None = None,
+        sender: str | None = None,
+        recipient: str | None = None,
+        reply_to: int | None = None,
     ) -> list[Message]:
         acked_ids = self.get_acked_ids()
         messages = []
@@ -220,6 +254,12 @@ class Channel:
             if agent and agent not in (message.sender, message.recipient):
                 continue
             if session is not None and message.session != session:
+                continue
+            if sender is not None and message.sender != sender:
+                continue
+            if recipient is not None and message.recipient != recipient:
+                continue
+            if reply_to is not None and message.reply_to != reply_to:
                 continue
             if message.id in acked_ids:
                 message = Message(

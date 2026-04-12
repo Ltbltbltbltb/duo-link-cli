@@ -485,6 +485,86 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(alpha_stderr, "")
         self.assertIn("pendente alpha", alpha_stdout)
 
+    def test_history_filters_by_sender(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "primeira")
+        channel.send("claude", "codex", "segunda")
+        channel.send("bot", "claude", "terceira")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "--from",
+            "claude",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["from"], "claude")
+        self.assertEqual(payloads[0]["msg"], "segunda")
+
+    def test_history_filters_by_recipient(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "primeira")
+        channel.send("claude", "codex", "segunda")
+        channel.send("bot", "claude", "terceira")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "--to",
+            "claude",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual([item["msg"] for item in payloads], ["primeira", "terceira"])
+
+    def test_history_filters_by_reply_to_with_session(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "raiz alpha", session="alpha")
+        channel.send(
+            "claude",
+            "codex",
+            "resposta alpha",
+            reply_to=1,
+            session="alpha",
+        )
+        channel.send("codex", "claude", "raiz beta", session="beta")
+        channel.send(
+            "claude",
+            "codex",
+            "resposta beta",
+            reply_to=3,
+            session="beta",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "--reply-to",
+            "1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "resposta alpha")
+        self.assertEqual(payloads[0]["reply_to"], 1)
+        self.assertEqual(payloads[0]["session"], "alpha")
+
     def test_history_json_filters_messages_for_agent(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         channel = Channel(self.channel_dir)

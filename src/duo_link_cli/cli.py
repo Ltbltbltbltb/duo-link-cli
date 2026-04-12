@@ -102,6 +102,19 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument(
         "-n", type=int, default=0, help="ultimas N mensagens (0=todas)"
     )
+    history_parser.add_argument(
+        "--from", dest="from_filter", default=None, help="filtrar por remetente"
+    )
+    history_parser.add_argument(
+        "--to", dest="to_filter", default=None, help="filtrar por destinatario"
+    )
+    history_parser.add_argument(
+        "--reply-to",
+        dest="reply_to_filter",
+        type=int,
+        default=None,
+        help="filtrar por reply_to ID",
+    )
 
     sub.add_parser("status", help="resume o canal", parents=[shared])
     sub.add_parser("rotate", help="arquiva chat.log e inicia novo", parents=[shared])
@@ -117,6 +130,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "pending", help="lista mensagens pendentes sem consumir", parents=[shared]
     )
+
+    export_parser = sub.add_parser(
+        "export", help="exporta historico como JSONL", parents=[shared]
+    )
+    export_parser.add_argument(
+        "-o", "--output", type=Path, help="arquivo de saida (default: stdout)"
+    )
+
+    sub.add_parser("stats", help="estatisticas por agente", parents=[shared])
 
     repl_parser = sub.add_parser(
         "repl", help="abre um chat interativo simples", parents=[shared]
@@ -235,7 +257,14 @@ def cmd_history(args: argparse.Namespace) -> int:
         return 2
     channel = resolve_channel(args.channel)
     agent = resolve_identity(args.as_id) if args.as_id else None
-    for message in channel.history(limit=args.n, agent=agent, session=args.session):
+    for message in channel.history(
+        limit=args.n,
+        agent=agent,
+        session=args.session,
+        sender=args.from_filter,
+        recipient=args.to_filter,
+        reply_to=args.reply_to_filter,
+    ):
         if args.json:
             print(json.dumps(message.as_dict(), ensure_ascii=False))
         else:
@@ -312,6 +341,29 @@ def cmd_pending(args: argparse.Namespace) -> int:
             print(f"[pending] no pending messages for {agent}")
         for m in messages:
             print(m.raw)
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel)
+    data = channel.export_jsonl(session=args.session)
+    if args.output:
+        args.output.write_text(data, encoding="utf-8")
+        print(f"[export] {args.output}")
+    else:
+        print(data, end="")
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel)
+    data = channel.stats()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False))
+    else:
+        print(f"total:  {data['total_messages']} messages, {data['total_acked']} acked")
+        for agent, counts in data["agents"].items():
+            print(f"  {agent}: {counts['sent']} sent, {counts['received']} received")
     return 0
 
 
@@ -427,6 +479,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_drain(args)
         if args.cmd == "pending":
             return cmd_pending(args)
+        if args.cmd == "export":
+            return cmd_export(args)
+        if args.cmd == "stats":
+            return cmd_stats(args)
         if args.cmd == "repl":
             return cmd_repl(args)
         if args.cmd == "context":
