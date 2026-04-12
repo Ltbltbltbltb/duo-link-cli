@@ -250,6 +250,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_show = task_sub.add_parser("show", help="detalha uma tarefa")
     task_show.add_argument("task_id", type=int)
 
+    task_wait = task_sub.add_parser(
+        "wait", help="aguarda a tarefa chegar em done/failed"
+    )
+    task_wait.add_argument("task_id", type=int)
+    task_wait.add_argument("--timeout", type=float, default=60.0)
+    task_wait.add_argument("--poll-interval", type=float, default=0.5)
+
     task_retry = task_sub.add_parser("retry", help="reenfileira tarefa falhada")
     task_retry.add_argument("task_id", type=int)
 
@@ -635,6 +642,32 @@ def cmd_task_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_wait(args: argparse.Namespace) -> int:
+    if args.timeout <= 0:
+        print("error: --timeout must be positive", file=sys.stderr)
+        return 2
+    if args.poll_interval <= 0:
+        print("error: --poll-interval must be positive", file=sys.stderr)
+        return 2
+    store = resolve_task_store(args.channel)
+    task = store.wait_for_task(
+        args.task_id,
+        timeout=args.timeout,
+        poll_interval=args.poll_interval,
+    )
+    if task is None:
+        print(
+            f"[timeout] task {args.task_id} did not reach done/failed in {args.timeout}s",
+            file=sys.stderr,
+        )
+        return 1
+    if args.json:
+        print(json.dumps(task.as_dict(), ensure_ascii=False))
+    else:
+        print_task(task, as_json=False)
+    return 0
+
+
 def cmd_task_retry(args: argparse.Namespace) -> int:
     store = resolve_task_store(args.channel)
     task = store.retry_task(args.task_id)
@@ -801,9 +834,11 @@ def main(argv: list[str] | None = None) -> int:
                 return cmd_task_stats(args)
             if args.task_cmd == "show":
                 return cmd_task_show(args)
+            if args.task_cmd == "wait":
+                return cmd_task_wait(args)
             if args.task_cmd == "retry":
                 return cmd_task_retry(args)
-            parser.error("task exige add, list, stats, show ou retry")
+            parser.error("task exige add, list, stats, show, wait ou retry")
         if args.cmd == "worker":
             if args.worker_cmd == "run":
                 return cmd_worker_run(args)

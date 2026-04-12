@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -128,6 +129,29 @@ class TaskStoreTests(unittest.TestCase):
         self.store.mark_done(t2.id, exit_code=0, stdout="", stderr="")
         done = self.store.list_tasks(status="done")
         self.assertEqual(len(done), 1)
+
+    def test_wait_for_task_returns_when_task_reaches_done(self) -> None:
+        task = self.store.add_task(target="any", command="echo", args=["ok"])
+        claimed = self.store.claim_next_task(target="any", worker_name="w")
+
+        def finish() -> None:
+            time.sleep(0.1)
+            self.store.mark_done(claimed.id, exit_code=0, stdout="ok", stderr="")
+
+        thread = threading.Thread(target=finish)
+        thread.start()
+        final = self.store.wait_for_task(task.id, timeout=1.0, poll_interval=0.05)
+        thread.join(timeout=1)
+
+        self.assertIsNotNone(final)
+        self.assertEqual(final.status, "done")
+        self.assertEqual(final.exit_code, 0)
+
+    def test_wait_for_task_times_out_when_task_stays_non_final(self) -> None:
+        task = self.store.add_task(target="any", command="echo", args=["ok"])
+        self.store.claim_next_task(target="any", worker_name="w")
+        final = self.store.wait_for_task(task.id, timeout=0.15, poll_interval=0.05)
+        self.assertIsNone(final)
 
 
 if __name__ == "__main__":

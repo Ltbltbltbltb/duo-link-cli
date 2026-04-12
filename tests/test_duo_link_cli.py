@@ -1564,6 +1564,84 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertIn("task 1 done rc=0", history[1].text)
         self.assertTrue(all(msg.msg_type == "status" for msg in history))
 
+    def test_task_wait_returns_done_task_as_json(self) -> None:
+        self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--",
+            "echo",
+            "phase1",
+        )
+
+        def run_worker() -> None:
+            time.sleep(0.15)
+            self.run_cli(
+                "worker",
+                "--channel",
+                str(self.channel_dir),
+                "run",
+                "--target",
+                "terminal_a",
+                "--max-iterations",
+                "1",
+            )
+
+        thread = threading.Thread(target=run_worker)
+        thread.start()
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--json",
+            "--channel",
+            str(self.channel_dir),
+            "wait",
+            "1",
+            "--timeout",
+            "2",
+            "--poll-interval",
+            "0.05",
+        )
+        thread.join(timeout=2)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["id"], 1)
+        self.assertEqual(payload["status"], "done")
+        self.assertEqual(payload["exit_code"], 0)
+
+    def test_task_wait_times_out_for_non_final_task(self) -> None:
+        self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--",
+            "echo",
+            "phase1",
+        )
+        TaskStore(self.channel_dir).claim_next_task(target="terminal_a", worker_name="w")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "wait",
+            "1",
+            "--timeout",
+            "0.15",
+            "--poll-interval",
+            "0.05",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("timeout", stderr.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

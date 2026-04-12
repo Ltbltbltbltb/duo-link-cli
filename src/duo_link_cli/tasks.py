@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ TASK_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_tasks_status_target_created
 ON tasks(status, target, created_at, id);
 """
+
+FINAL_TASK_STATUSES = {"done", "failed"}
 
 
 @dataclass(frozen=True)
@@ -336,6 +339,29 @@ class TaskStore:
             "by_target": {str(row["target"]): int(row["count"]) for row in target_rows},
         }
 
+    def wait_for_task(
+        self,
+        task_id: int,
+        *,
+        timeout: float = 60.0,
+        poll_interval: float = 0.5,
+    ) -> Task | None:
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
+        deadline = time.monotonic() + timeout
+        while True:
+            task = self.get_task(task_id)
+            if task is None:
+                return None
+            if task.status in FINAL_TASK_STATUSES:
+                return task
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(poll_interval, remaining))
+
     def claim_next_task(
         self,
         *,
@@ -599,14 +625,29 @@ def stats(source: TaskStore | sqlite3.Connection | str | Path) -> dict[str, Any]
     return _store_from_source(source).stats()
 
 
+def wait_for_task(
+    source: TaskStore | sqlite3.Connection | str | Path,
+    task_id: int,
+    *,
+    timeout: float = 60.0,
+    poll_interval: float = 0.5,
+) -> dict[str, Any] | None:
+    task = _store_from_source(source).wait_for_task(
+        task_id, timeout=timeout, poll_interval=poll_interval
+    )
+    return task.as_dict() if task is not None else None
+
+
 __all__ = [
     "TASK_INDEX",
     "TASK_SCHEMA",
     "Task",
     "TaskStore",
+    "FINAL_TASK_STATUSES",
     "add_task",
     "get_task",
     "init_db",
     "list_tasks",
     "stats",
+    "wait_for_task",
 ]
