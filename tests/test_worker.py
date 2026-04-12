@@ -42,25 +42,35 @@ class WorkerTests(unittest.TestCase):
 
     def test_worker_chains_next_on_success(self) -> None:
         self.store.add_task(
-            target="terminal_a", command="echo", args=["step1"],
-            next_on_success=[{"target": "terminal_b", "command": "echo", "args": ["step2"]}],
+            target="terminal_a",
+            command="echo",
+            args=["step1"],
+            next_on_success=[
+                {"target": "terminal_b", "command": "echo", "args": ["step2"]}
+            ],
         )
         worker_loop(self.store, "terminal_a", "w-a", max_iterations=1)
         tasks = self.store.list_tasks()
         self.assertEqual(len(tasks), 2)
-        step2 = tasks[0]  # most recent first
+        step2 = tasks[1]  # ordered by id ASC; task 2 is the chained one
         self.assertEqual(step2.target, "terminal_b")
         self.assertEqual(step2.status, "pending")
 
     def test_pipeline_a_b_a(self) -> None:
         self.store.add_task(
-            target="terminal_a", command="echo", args=["phase1"],
-            next_on_success=[{
-                "target": "terminal_b", "command": "echo", "args": ["phase2"],
-                "next_on_success": [
-                    {"target": "terminal_a", "command": "echo", "args": ["phase3"]}
-                ],
-            }],
+            target="terminal_a",
+            command="echo",
+            args=["phase1"],
+            next_on_success=[
+                {
+                    "target": "terminal_b",
+                    "command": "echo",
+                    "args": ["phase2"],
+                    "next_on_success": [
+                        {"target": "terminal_a", "command": "echo", "args": ["phase3"]}
+                    ],
+                }
+            ],
         )
         worker_loop(self.store, "terminal_a", "w-a", max_iterations=1)
         self.assertEqual(self.store.get_task(1).status, "done")
@@ -81,7 +91,9 @@ class WorkerTests(unittest.TestCase):
 
         def run_w(idx: int) -> None:
             s = TaskStore(self.root)
-            results[idx] = worker_loop(s, "any", f"w-{idx}", poll_interval=0.05, max_iterations=5)
+            results[idx] = worker_loop(
+                s, "any", f"w-{idx}", poll_interval=0.05, max_iterations=5
+            )
 
         t1 = threading.Thread(target=run_w, args=(0,))
         t2 = threading.Thread(target=run_w, args=(1,))

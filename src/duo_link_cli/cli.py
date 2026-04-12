@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 
 from .channel import Channel, DEFAULT_CONTEXT_AGENTS
+from .tasks import TaskStore
+from .worker import worker_loop
 
 VERSION = "0.6.0"
 
@@ -14,6 +16,17 @@ VERSION = "0.6.0"
 def resolve_channel(explicit: str | None, create_if_missing: bool = False) -> Channel:
     try:
         return Channel.resolve(
+            explicit=explicit, cwd=Path.cwd(), create_if_missing=create_if_missing
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+
+def resolve_task_store(
+    explicit: str | None, create_if_missing: bool = False
+) -> TaskStore:
+    try:
+        return TaskStore.resolve(
             explicit=explicit, cwd=Path.cwd(), create_if_missing=create_if_missing
         )
     except FileNotFoundError as exc:
@@ -212,17 +225,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # --- task queue subcommands ---
-    task_parser = sub.add_parser("task", help="gerencia fila de tarefas", parents=[shared])
+    task_parser = sub.add_parser(
+        "task", help="gerencia fila de tarefas", parents=[shared]
+    )
     task_sub = task_parser.add_subparsers(dest="task_cmd")
 
     task_add = task_sub.add_parser("add", help="adiciona tarefa na fila")
     task_add.add_argument("--target", required=True, help="terminal alvo")
     task_add.add_argument("--max-attempts", type=int, default=3)
     task_add.add_argument("--next-json", default=None, help="JSON de next_on_success")
-    task_add.add_argument("cmd_args", nargs="+", help="comando e argumentos")
+    task_add.add_argument(
+        "cmd_args",
+        nargs=argparse.REMAINDER,
+        help="comando e argumentos; use -- antes do comando para evitar conflito com flags",
+    )
 
-    task_sub.add_parser("list", help="lista tarefas").add_argument(
-        "--status", default=None, help="filtrar por status"
+    task_list = task_sub.add_parser("list", help="lista tarefas")
+    task_list.add_argument("--status", default=None, help="filtrar por status")
+    task_list.add_argument("--target", default=None, help="filtrar por target")
+    task_list.add_argument(
+        "--limit", type=int, default=0, help="limite de resultados (0=todas)"
     )
     task_show = task_sub.add_parser("show", help="detalha uma tarefa")
     task_show.add_argument("task_id", type=int)
@@ -230,13 +252,21 @@ def build_parser() -> argparse.ArgumentParser:
     task_retry = task_sub.add_parser("retry", help="reenfileira tarefa falhada")
     task_retry.add_argument("task_id", type=int)
 
-    worker_parser = sub.add_parser("worker", help="executa worker autonomo", parents=[shared])
+    worker_parser = sub.add_parser(
+        "worker", help="executa worker autonomo", parents=[shared]
+    )
     worker_sub = worker_parser.add_subparsers(dest="worker_cmd")
     worker_run = worker_sub.add_parser("run", help="inicia worker em loop")
     worker_run.add_argument("--target", required=True, help="terminal alvo")
     worker_run.add_argument("--name", default=None, help="nome do worker")
     worker_run.add_argument("--poll-interval", type=float, default=1.0)
-    worker_run.add_argument("--db", default="tasks.db", help="caminho do banco")
+    worker_run.add_argument("--db", default=None, help="arquivo .db ou diretorio do canal")
+    worker_run.add_argument(
+        "--max-iterations",
+        type=int,
+        default=0,
+        help="para apos executar N tarefas (0=loop infinito)",
+    )
 
     repl_parser = sub.add_parser(
         "repl", help="abre um chat interativo simples", parents=[shared]
@@ -502,6 +532,124 @@ def cmd_purge(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_next_tasks(raw: str | None) -> list[dict[str, object]]:
+    if raw is None:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"error: invalid --next-json: {exc.msg}") from exc
+    if isinstance(payload, dict):
+        return [payload]
+    if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
+        return payload
+    raise SystemExit("error: --next-json must be a JSON object or list of objects")
+
+
+def print_task(task, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(task.as_dict(), ensure_ascii=False))
+        return
+    command = " ".join([task.command, *task.args]).strip()
+    print(
+        f"#{task.id} {task.status} target={task.target} attempts={task.attempts}/{task.max_attempts} :: {command}"
+    )
+
+
+def cmd_task_add(args: argparse.Namespace) -> int:
+    command_parts = list(args.cmd_args)
+    if command_parts and command_parts[0] == "--":
+        command_parts = command_parts[1:]
+    if not command_parts:
+        print("error: task add requires a command after --", file=sys.stderr)
+        return 2
+    if args.max_attempts <= 0:
+        print("error: --max-attempts must be >= 1", file=sys.stderr)
+        return 2
+    store = resolve_task_store(args.channel, create_if_missing=True)
+    task = store.add_task(
+        target=args.target,
+        command=command_parts[0],
+        args=command_parts[1:],
+        next_on_success=parse_next_tasks(args.next_json),
+        max_attempts=args.max_attempts,
+    )
+    if args.json:
+        print(json.dumps(task.as_dict(), ensure_ascii=False))
+    else:
+        print_task(task, as_json=False)
+    return 0
+
+
+def cmd_task_list(args: argparse.Namespace) -> int:
+    if args.limit < 0:
+        print("error: --limit must be >= 0", file=sys.stderr)
+        return 2
+    store = resolve_task_store(args.channel)
+    tasks = store.list_tasks(status=args.status, target=args.target, limit=args.limit)
+    for task in tasks:
+        print_task(task, as_json=args.json)
+    return 0
+
+
+def cmd_task_show(args: argparse.Namespace) -> int:
+    store = resolve_task_store(args.channel)
+    task = store.get_task(args.task_id)
+    if task is None:
+        print(f"error: task {args.task_id} not found", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(task.as_dict(), ensure_ascii=False))
+    else:
+        print(f"id:          {task.id}")
+        print(f"status:      {task.status}")
+        print(f"target:      {task.target}")
+        print(f"command:     {task.command}")
+        print(f"args:        {json.dumps(task.args, ensure_ascii=False)}")
+        print(f"attempts:    {task.attempts}/{task.max_attempts}")
+        print(f"claimed_by:  {task.claimed_by or '-'}")
+        print(f"created_at:  {task.created_at}")
+        print(f"started_at:  {task.started_at or '-'}")
+        print(f"finished_at: {task.finished_at or '-'}")
+        print(f"exit_code:   {task.exit_code if task.exit_code is not None else '-'}")
+    return 0
+
+
+def cmd_task_retry(args: argparse.Namespace) -> int:
+    store = resolve_task_store(args.channel)
+    task = store.retry_task(args.task_id)
+    if task is None:
+        print(f"error: task {args.task_id} not found", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(task.as_dict(), ensure_ascii=False))
+    else:
+        print_task(task, as_json=False)
+    return 0
+
+
+def cmd_worker_run(args: argparse.Namespace) -> int:
+    if args.poll_interval <= 0:
+        print("error: --poll-interval must be positive", file=sys.stderr)
+        return 2
+    if args.max_iterations < 0:
+        print("error: --max-iterations must be >= 0", file=sys.stderr)
+        return 2
+    if args.db:
+        store = TaskStore(args.db)
+    else:
+        store = resolve_task_store(args.channel, create_if_missing=True)
+    worker_name = args.name or args.as_id or f"worker-{args.target}"
+    worker_loop(
+        store=store,
+        target=args.target,
+        worker_name=worker_name,
+        poll_interval=args.poll_interval,
+        max_iterations=args.max_iterations,
+    )
+    return 0
+
+
 def cmd_context_show(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     content = channel.read_context(args.agent)
@@ -622,6 +770,20 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_import(args)
         if args.cmd == "purge":
             return cmd_purge(args)
+        if args.cmd == "task":
+            if args.task_cmd == "add":
+                return cmd_task_add(args)
+            if args.task_cmd == "list":
+                return cmd_task_list(args)
+            if args.task_cmd == "show":
+                return cmd_task_show(args)
+            if args.task_cmd == "retry":
+                return cmd_task_retry(args)
+            parser.error("task exige add, list, show ou retry")
+        if args.cmd == "worker":
+            if args.worker_cmd == "run":
+                return cmd_worker_run(args)
+            parser.error("worker exige run")
         if args.cmd == "repl":
             return cmd_repl(args)
         if args.cmd == "context":

@@ -60,15 +60,19 @@ def worker_loop(
             rc, stdout, stderr = run_task(task)
 
             if rc == 0:
-                done_task = store.mark_done(
-                    task.id, exit_code=rc, stdout=stdout, stderr=stderr
-                )
+                store.mark_done(task.id, exit_code=rc, stdout=stdout, stderr=stderr)
                 status_msg = "done"
             else:
-                failed_task = store.mark_failed(
+                requeued = store.requeue_if_retryable(
                     task.id, exit_code=rc, stdout=stdout, stderr=stderr
                 )
-                status_msg = failed_task.status
+                if requeued is None:
+                    failed_task = store.mark_failed(
+                        task.id, exit_code=rc, stdout=stdout, stderr=stderr
+                    )
+                    status_msg = failed_task.status
+                else:
+                    status_msg = "pending (requeued)"
 
             print(f"[worker] task {task.id} rc={rc} -> {status_msg}")
             sys.stdout.flush()

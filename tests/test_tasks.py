@@ -39,7 +39,7 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(task.command, "echo")
         reloaded = self.store.get_task(task.id)
         self.assertEqual(reloaded.status, "running")
-        self.assertEqual(reloaded.worker_name, "w-a")
+        self.assertEqual(reloaded.claimed_by, "w-a")
 
     def test_claim_respects_target(self) -> None:
         self.store.add_task(target="terminal_b", command="echo", args=["b"])
@@ -77,27 +77,32 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(reloaded.exit_code, 0)
 
     def test_mark_done_enqueues_next(self) -> None:
+        next_spec = [{"target": "terminal_b", "command": "echo", "args": ["s2"]}]
         t = self.store.add_task(
             target="terminal_a",
             command="echo",
             args=["s1"],
-            next_on_success=[
-                {"target": "terminal_b", "command": "echo", "args": ["s2"]}
-            ],
+            next_on_success=next_spec,
         )
         self.store.claim_next_task(target="terminal_a", worker_name="w")
-        self.store.mark_done(t.id, exit_code=0, stdout="", stderr="")
-        # next_on_success should have created a new pending task
-        tasks = self.store.list_tasks(status="pending")
-        self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0].target, "terminal_b")
+        # mark_done returns list[Task] of newly created next tasks
+        created = self.store.mark_done(t.id, exit_code=0, stdout="", stderr="")
+        # original task is now done
+        done = self.store.get_task(t.id)
+        self.assertEqual(done.status, "done")
+        self.assertEqual(done.next_on_success, next_spec)
+        # next tasks were auto-enqueued by mark_done
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].target, "terminal_b")
 
     def test_mark_failed_retries(self) -> None:
         t = self.store.add_task(target="any", command="false", max_attempts=3)
         self.store.claim_next_task(target="any", worker_name="w")
-        self.store.mark_failed(t.id, exit_code=1, stdout="", stderr="err")
-        reloaded = self.store.get_task(t.id)
-        self.assertEqual(reloaded.status, "pending")
+        requeued = self.store.requeue_if_retryable(
+            t.id, exit_code=1, stdout="", stderr="err"
+        )
+        self.assertIsNotNone(requeued)
+        self.assertEqual(requeued.status, "pending")
 
     def test_mark_failed_final(self) -> None:
         t = self.store.add_task(target="any", command="false", max_attempts=1)
