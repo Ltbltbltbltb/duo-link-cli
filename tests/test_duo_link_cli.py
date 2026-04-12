@@ -274,6 +274,43 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(lines[0]["msg"], "primeira")
         self.assertEqual(lines[1]["msg"], "segunda")
 
+    def test_ack_marks_message_as_confirmed_in_history_json(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "precisa ack",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "ack",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("ack", stdout.lower())
+
+        exit_code, stdout, _ = self.run_cli(
+            "history",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(payloads[0]["id"], 1)
+        self.assertTrue(payloads[0]["acked"])
+
     def test_history_rejects_negative_limit(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         exit_code, stdout, stderr = self.run_cli(
@@ -303,6 +340,47 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(payload["messages"], 1)
         self.assertEqual(payload["agents"], ["claude", "codex"])
         self.assertIn("codex -> claude: ultima", payload["last"])
+
+    def test_status_json_reports_pending_and_acked_counts(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "msg 1",
+        )
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "msg 2",
+        )
+        self.run_cli(
+            "ack",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "1",
+        )
+
+        exit_code, stdout, _ = self.run_cli(
+            "status",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["messages"], 2)
+        self.assertEqual(payload["acked_messages"], 1)
+        self.assertEqual(payload["pending_messages"], 1)
 
     def test_status_does_not_create_channel_when_missing(self) -> None:
         missing_channel = self.channel_dir

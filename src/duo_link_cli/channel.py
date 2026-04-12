@@ -27,6 +27,7 @@ class Message:
     recipient: str
     text: str
     raw: str
+    acked: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -35,6 +36,7 @@ class Message:
             "from": self.sender,
             "to": self.recipient,
             "msg": self.text,
+            "acked": self.acked,
         }
 
 
@@ -43,6 +45,7 @@ class Channel:
         self.root = root
         self.log_path = root / "chat.log"
         self.lock_path = root / ".chat.lock"
+        self.acks_path = root / ".acks"
 
     @classmethod
     def resolve(
@@ -107,6 +110,27 @@ class Channel:
     def write_cursor(self, agent: str, position: int) -> None:
         self.cursor_path(agent).write_text(str(position), encoding="utf-8")
 
+    def get_acked_ids(self) -> set[int]:
+        if not self.acks_path.exists():
+            return set()
+        ids = set()
+        for line in self.acks_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    ids.add(int(line))
+                except ValueError:
+                    pass
+        return ids
+
+    def ack(self, msg_id: int, agent: str) -> None:
+        self.require_log()
+        with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            with self.acks_path.open("a", encoding="utf-8") as f:
+                f.write(f"{msg_id}\n")
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
     def context_path(self, agent: str) -> Path:
         return self.root / f"context.{agent}.md"
 
@@ -167,6 +191,7 @@ class Channel:
         return self.log_path.read_text(encoding="utf-8").splitlines()
 
     def history(self, limit: int = 0, agent: str | None = None) -> list[Message]:
+        acked_ids = self.get_acked_ids()
         messages = []
         for line in self.read_lines():
             message = self.parse_line(line)
@@ -174,6 +199,16 @@ class Channel:
                 continue
             if agent and agent not in (message.sender, message.recipient):
                 continue
+            if message.id in acked_ids:
+                message = Message(
+                    id=message.id,
+                    ts=message.ts,
+                    sender=message.sender,
+                    recipient=message.recipient,
+                    text=message.text,
+                    raw=message.raw,
+                    acked=True,
+                )
             messages.append(message)
         return messages[-limit:] if limit else messages
 
@@ -186,9 +221,12 @@ class Channel:
                 for side in (message.sender, message.recipient)
             }
         )
+        acked_count = sum(1 for m in messages if m.acked)
         return {
             "channel": str(self.root),
             "messages": len(messages),
+            "acked_messages": acked_count,
+            "pending_messages": len(messages) - acked_count,
             "agents": agents,
             "last": messages[-1].raw if messages else None,
             "has_inotify": HAS_INOTIFY,

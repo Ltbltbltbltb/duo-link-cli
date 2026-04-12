@@ -98,6 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("status", help="resume o canal", parents=[shared])
+    sub.add_parser("rotate", help="arquiva chat.log e inicia novo", parents=[shared])
+
+    ack_parser = sub.add_parser(
+        "ack", help="confirma recebimento de mensagem", parents=[shared]
+    )
+    ack_parser.add_argument("msg_id", type=int, help="ID da mensagem a confirmar")
 
     repl_parser = sub.add_parser(
         "repl", help="abre um chat interativo simples", parents=[shared]
@@ -229,6 +235,34 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rotate(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel)
+    archive = channel.rotate()
+    if args.json:
+        print(
+            json.dumps({"archived": str(archive), "rotated": True}, ensure_ascii=False)
+        )
+    else:
+        print(f"[rotated] archived to {archive}")
+    return 0
+
+
+def cmd_ack(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel)
+    agent = resolve_identity(args.as_id)
+    channel.ack(args.msg_id, agent)
+    if args.json:
+        print(
+            json.dumps(
+                {"acked": True, "msg_id": args.msg_id, "by": agent},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"[ack] message {args.msg_id} acknowledged by {agent}")
+    return 0
+
+
 def cmd_context_show(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     content = channel.read_context(args.agent)
@@ -333,6 +367,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_history(args)
         if args.cmd == "status":
             return cmd_status(args)
+        if args.cmd == "rotate":
+            return cmd_rotate(args)
+        if args.cmd == "ack":
+            return cmd_ack(args)
         if args.cmd == "repl":
             return cmd_repl(args)
         if args.cmd == "context":

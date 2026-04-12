@@ -11,6 +11,8 @@ build/
 duo-link/chat.log
 duo-link/.chat.lock
 duo-link/.cursor.*
+duo-link/.acks
+duo-link/chat.log.*
 duo-link/context.*.md
 
 # virtual environments
