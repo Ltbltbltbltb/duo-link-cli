@@ -30,6 +30,8 @@ class Message:
     acked: bool = False
     reply_to: int | None = None
     session: str | None = None
+    priority: str = "normal"
+    msg_type: str = "text"
 
     def as_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -39,6 +41,8 @@ class Message:
             "to": self.recipient,
             "msg": self.text,
             "acked": self.acked,
+            "priority": self.priority,
+            "type": self.msg_type,
         }
         d["reply_to"] = self.reply_to
         if self.session is not None:
