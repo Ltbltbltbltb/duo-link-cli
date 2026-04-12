@@ -130,10 +130,19 @@ duo-link send --as codex --channel /tmp/duo-demo claude "eu fico com README e te
 
 ## Estado atual
 
-O projeto esta funcional, mas ainda e um utilitario simples:
+O projeto esta funcional e passou por uma auditoria tecnica com melhorias aplicadas:
 
-- o transporte e um log local append-only
-- nao ha ACK formal, sessoes nomeadas ou multiplexacao de canais
-- o foco atual e baixo atrito em ambiente local compartilhado
+- transporte JSONL com IDs por mensagem (backward compatible com formato legado)
+- cursor persistente por agente para consumo confiavel de backlog
+- comandos de leitura nao criam canal como side effect
+- REPL escopado ao par de agentes
+- validacao de inputs (timeout, poll_interval, history -n)
+- CI com GitHub Actions (Python 3.10/3.11/3.12)
+
+Ainda nao implementado:
+
+- ACK formal, sessoes nomeadas ou multiplexacao de canais
+- rotacao de log
+- backend alternativo (socket Unix)
 
 Para o caso de uso que originou a ferramenta, isso foi suficiente para coordenacao real entre agentes CLI.

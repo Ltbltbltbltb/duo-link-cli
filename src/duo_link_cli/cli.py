@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .channel import Channel, DEFAULT_CONTEXT_AGENTS
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def resolve_channel(explicit: str | None, create_if_missing: bool = False) -> Channel:
@@ -137,7 +137,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
         channel = resolve_channel(args.channel, create_if_missing=True)
     channel.init(tuple(args.agents))
-    print(channel.root)
+    if args.json:
+        print(
+            json.dumps(
+                {"channel": str(channel.root), "initialized": True},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(channel.root)
     return 0
 
 
@@ -223,7 +231,16 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_context_show(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
-    print(channel.read_context(args.agent), end="")
+    content = channel.read_context(args.agent)
+    if args.json:
+        print(
+            json.dumps(
+                {"agent": args.agent, "content": content},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(content, end="")
     return 0
 
 
@@ -234,7 +251,15 @@ def cmd_context_set(args: argparse.Namespace) -> int:
     else:
         content = args.file.read_text(encoding="utf-8")
     path = channel.write_context(args.agent, content)
-    print(path)
+    if args.json:
+        print(
+            json.dumps(
+                {"agent": args.agent, "path": str(path), "updated": True},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(path)
     return 0
 
 
