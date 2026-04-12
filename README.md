@@ -12,6 +12,13 @@ O projeto nasceu de um caso real: dois agentes CLI, em terminais diferentes, pre
 - mantem historico append-only
 - guarda contexto resumido por agente em arquivos separados
 - oferece um `repl` simples para conversa interativa
+- ACK formal de mensagens com contagem de pendentes
+- sessoes nomeadas para isolamento de trafego
+- correlacao de mensagens via `reply_to`
+- drain e pending para gestao de backlog
+- export JSONL e stats por agente
+- rotacao de log com arquivamento
+- filtros avancados: `--from`, `--to`, `--reply-to`, `--session`
 
 O backend atual usa arquivos locais no diretorio do canal:
 
