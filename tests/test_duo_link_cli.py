@@ -1084,6 +1084,63 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(payload["agents"]["bot"]["sent"], 1)
         self.assertEqual(payload["agents"]["bot"]["received"], 0)
 
+    def test_stats_json_reports_by_priority_and_type(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "m1", priority="urgent", msg_type="error")
+        channel.send("claude", "codex", "m2", priority="high", msg_type="status")
+        channel.send("bot", "claude", "m3", priority="urgent", msg_type="status")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "stats",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["by_priority"]["urgent"], 2)
+        self.assertEqual(payload["by_priority"]["high"], 1)
+        self.assertEqual(payload["by_type"]["status"], 2)
+        self.assertEqual(payload["by_type"]["error"], 1)
+
+    def test_stats_respects_session_filter(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "alpha 1", session="alpha", priority="high")
+        channel.send("claude", "codex", "alpha 2", session="alpha", msg_type="status")
+        channel.send("bot", "claude", "beta 1", session="beta", priority="urgent")
+
+        ack_exit, _, ack_stderr = self.run_cli(
+            "ack",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "1",
+        )
+        self.assertEqual(ack_exit, 0)
+        self.assertEqual(ack_stderr, "")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "stats",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["total_messages"], 2)
+        self.assertEqual(payload["total_acked"], 1)
+        self.assertEqual(sorted(payload["agents"]), ["claude", "codex"])
+        self.assertEqual(payload["by_priority"]["high"], 1)
+        self.assertEqual(payload["by_type"]["status"], 1)
+        self.assertNotIn("bot", payload["agents"])
+
     def test_import_restores_history_from_exported_jsonl(self) -> None:
         source_dir = Path(self.temp_dir.name) / "source"
         dest_dir = Path(self.temp_dir.name) / "dest"

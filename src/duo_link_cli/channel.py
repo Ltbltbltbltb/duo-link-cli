@@ -322,15 +322,19 @@ class Channel:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         return total - keep
 
-    def stats(self) -> dict[str, object]:
+    def stats(self, session: str | None = None) -> dict[str, object]:
         """Per-agent statistics."""
-        messages = self.history()
-        acked_ids = self.get_acked_ids()
+        messages = self.history(session=session)
+        acked_count = sum(1 for message in messages if message.acked)
         by_sender: dict[str, int] = {}
         by_recipient: dict[str, int] = {}
+        by_priority: dict[str, int] = {}
+        by_type: dict[str, int] = {}
         for m in messages:
             by_sender[m.sender] = by_sender.get(m.sender, 0) + 1
             by_recipient[m.recipient] = by_recipient.get(m.recipient, 0) + 1
+            by_priority[m.priority] = by_priority.get(m.priority, 0) + 1
+            by_type[m.msg_type] = by_type.get(m.msg_type, 0) + 1
         agents = sorted(set(by_sender) | set(by_recipient))
         per_agent = {}
         for a in agents:
@@ -340,8 +344,10 @@ class Channel:
             }
         return {
             "total_messages": len(messages),
-            "total_acked": len(acked_ids),
+            "total_acked": acked_count,
             "agents": per_agent,
+            "by_priority": by_priority,
+            "by_type": by_type,
         }
 
     def history(

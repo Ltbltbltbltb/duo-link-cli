@@ -11,6 +11,7 @@ build/
 duo-link/chat.log
 duo-link/.chat.lock
 duo-link/.cursor.*
+duo-link/.consumed.*
 duo-link/.acks
 duo-link/chat.log.*
 duo-link/context.*.md

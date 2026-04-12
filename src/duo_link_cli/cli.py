@@ -438,7 +438,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 def cmd_stats(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
-    data = channel.stats()
+    data = channel.stats(session=args.session)
     if args.json:
         print(json.dumps(data, ensure_ascii=False))
     else:
