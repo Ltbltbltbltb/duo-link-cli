@@ -140,6 +140,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("stats", help="estatisticas por agente", parents=[shared])
 
+    import_parser = sub.add_parser(
+        "import", help="importa historico JSONL", parents=[shared]
+    )
+    import_source = import_parser.add_mutually_exclusive_group(required=True)
+    import_source.add_argument(
+        "-i", "--input", type=Path, help="arquivo JSONL de entrada"
+    )
+    import_source.add_argument("--stdin", action="store_true", help="ler de stdin")
+
+    purge_parser = sub.add_parser(
+        "purge", help="remove mensagens antigas", parents=[shared]
+    )
+    purge_parser.add_argument(
+        "--keep", type=int, required=True, help="manter as ultimas N mensagens"
+    )
+
     repl_parser = sub.add_parser(
         "repl", help="abre um chat interativo simples", parents=[shared]
     )
@@ -367,6 +383,33 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel, create_if_missing=True)
+    if args.input:
+        data = args.input.read_text(encoding="utf-8")
+    else:
+        data = sys.stdin.read()
+    count = channel.import_jsonl(data)
+    if args.json:
+        print(json.dumps({"imported": count}, ensure_ascii=False))
+    else:
+        print(f"[import] {count} messages imported")
+    return 0
+
+
+def cmd_purge(args: argparse.Namespace) -> int:
+    if args.keep < 0:
+        print("error: --keep must be >= 0", file=sys.stderr)
+        return 2
+    channel = resolve_channel(args.channel)
+    purged = channel.purge(keep=args.keep)
+    if args.json:
+        print(json.dumps({"purged": purged, "kept": args.keep}, ensure_ascii=False))
+    else:
+        print(f"[purge] {purged} messages removed, {args.keep} kept")
+    return 0
+
+
 def cmd_context_show(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     content = channel.read_context(args.agent)
@@ -483,6 +526,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_export(args)
         if args.cmd == "stats":
             return cmd_stats(args)
+        if args.cmd == "import":
+            return cmd_import(args)
+        if args.cmd == "purge":
+            return cmd_purge(args)
         if args.cmd == "repl":
             return cmd_repl(args)
         if args.cmd == "context":

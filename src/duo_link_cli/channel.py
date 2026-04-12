@@ -230,6 +230,9 @@ class Channel:
                         obj = json.loads(line)
                         existing += 1
                         obj["id"] = existing
+                        # normalize export format: msg -> text
+                        if "msg" in obj and "text" not in obj:
+                            obj["text"] = obj.pop("msg")
                         log_handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
                         count += 1
                     except (json.JSONDecodeError, TypeError):

@@ -807,6 +807,180 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertIn("context", stderr.lower())
         self.assertFalse(missing_channel.exists())
 
+    def test_export_stdout_respects_session_filter(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "alpha 1", session="alpha")
+        channel.send("codex", "claude", "beta 1", session="beta")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "export",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "alpha 1")
+        self.assertEqual(payloads[0]["session"], "alpha")
+
+    def test_export_writes_jsonl_file(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "linha exportada")
+        output = Path(self.temp_dir.name) / "export.jsonl"
+
+        exit_code, stdout, stderr = self.run_cli(
+            "export",
+            "--channel",
+            str(self.channel_dir),
+            "--output",
+            str(output),
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn(str(output), stdout)
+        payloads = [
+            json.loads(line)
+            for line in output.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "linha exportada")
+
+    def test_stats_json_reports_per_agent_and_acked_counts(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "m1")
+        channel.send("claude", "codex", "m2")
+        channel.send("bot", "claude", "m3")
+
+        ack_exit, _, ack_stderr = self.run_cli(
+            "ack",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "1",
+        )
+        self.assertEqual(ack_exit, 0)
+        self.assertEqual(ack_stderr, "")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "stats",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["total_messages"], 3)
+        self.assertEqual(payload["total_acked"], 1)
+        self.assertEqual(payload["agents"]["codex"]["sent"], 1)
+        self.assertEqual(payload["agents"]["codex"]["received"], 1)
+        self.assertEqual(payload["agents"]["claude"]["sent"], 1)
+        self.assertEqual(payload["agents"]["claude"]["received"], 2)
+        self.assertEqual(payload["agents"]["bot"]["sent"], 1)
+        self.assertEqual(payload["agents"]["bot"]["received"], 0)
+
+    def test_import_restores_history_from_exported_jsonl(self) -> None:
+        source_dir = Path(self.temp_dir.name) / "source"
+        dest_dir = Path(self.temp_dir.name) / "dest"
+        export_file = Path(self.temp_dir.name) / "roundtrip.jsonl"
+
+        self.run_cli("init", str(source_dir))
+        source = Channel(source_dir)
+        source.send("codex", "claude", "raiz", session="alpha")
+        source.send(
+            "claude",
+            "codex",
+            "resposta",
+            reply_to=1,
+            session="alpha",
+        )
+
+        export_exit, _, export_stderr = self.run_cli(
+            "export",
+            "--channel",
+            str(source_dir),
+            "--output",
+            str(export_file),
+        )
+        self.assertEqual(export_exit, 0)
+        self.assertEqual(export_stderr, "")
+
+        self.run_cli("init", str(dest_dir))
+        import_exit, import_stdout, import_stderr = self.run_cli(
+            "import",
+            "--channel",
+            str(dest_dir),
+            "--input",
+            str(export_file),
+        )
+        self.assertEqual(import_exit, 0)
+        self.assertEqual(import_stderr, "")
+        self.assertIn("import", import_stdout.lower())
+
+        history_exit, history_stdout, history_stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(dest_dir),
+            "--json",
+        )
+        self.assertEqual(history_exit, 0)
+        self.assertEqual(history_stderr, "")
+        payloads = [json.loads(line) for line in history_stdout.splitlines() if line.strip()]
+        self.assertEqual([item["msg"] for item in payloads], ["raiz", "resposta"])
+        self.assertEqual(payloads[0]["session"], "alpha")
+        self.assertEqual(payloads[1]["reply_to"], 1)
+
+    def test_import_updates_status_after_roundtrip(self) -> None:
+        source_dir = Path(self.temp_dir.name) / "source-status"
+        dest_dir = Path(self.temp_dir.name) / "dest-status"
+        export_file = Path(self.temp_dir.name) / "status-roundtrip.jsonl"
+
+        self.run_cli("init", str(source_dir))
+        source = Channel(source_dir)
+        source.send("codex", "claude", "m1")
+        source.send("claude", "codex", "m2")
+
+        export_exit, _, export_stderr = self.run_cli(
+            "export",
+            "--channel",
+            str(source_dir),
+            "--output",
+            str(export_file),
+        )
+        self.assertEqual(export_exit, 0)
+        self.assertEqual(export_stderr, "")
+
+        self.run_cli("init", str(dest_dir))
+        import_exit, _, import_stderr = self.run_cli(
+            "import",
+            "--channel",
+            str(dest_dir),
+            "--input",
+            str(export_file),
+        )
+        self.assertEqual(import_exit, 0)
+        self.assertEqual(import_stderr, "")
+
+        status_exit, status_stdout, status_stderr = self.run_cli(
+            "status",
+            "--channel",
+            str(dest_dir),
+            "--json",
+        )
+        self.assertEqual(status_exit, 0)
+        self.assertEqual(status_stderr, "")
+        payload = json.loads(status_stdout)
+        self.assertEqual(payload["messages"], 2)
+        self.assertEqual(payload["agents"], ["claude", "codex"])
+
     def test_repl_scope_helpers_filter_only_the_selected_peer(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         channel = Channel(self.channel_dir)
