@@ -76,6 +76,21 @@ class Channel:
                     encoding="utf-8",
                 )
 
+    def cursor_path(self, agent: str) -> Path:
+        return self.root / f".cursor.{agent}"
+
+    def read_cursor(self, agent: str) -> int:
+        path = self.cursor_path(agent)
+        if path.exists():
+            try:
+                return int(path.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                return 0
+        return 0
+
+    def write_cursor(self, agent: str, position: int) -> None:
+        self.cursor_path(agent).write_text(str(position), encoding="utf-8")
+
     def context_path(self, agent: str) -> Path:
         return self.root / f"context.{agent}.md"
 
