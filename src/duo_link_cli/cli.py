@@ -211,6 +211,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep", type=int, required=True, help="manter as ultimas N mensagens"
     )
 
+    # --- task queue subcommands ---
+    task_parser = sub.add_parser("task", help="gerencia fila de tarefas", parents=[shared])
+    task_sub = task_parser.add_subparsers(dest="task_cmd")
+
+    task_add = task_sub.add_parser("add", help="adiciona tarefa na fila")
+    task_add.add_argument("--target", required=True, help="terminal alvo")
+    task_add.add_argument("--max-attempts", type=int, default=3)
+    task_add.add_argument("--next-json", default=None, help="JSON de next_on_success")
+    task_add.add_argument("cmd_args", nargs="+", help="comando e argumentos")
+
+    task_sub.add_parser("list", help="lista tarefas").add_argument(
+        "--status", default=None, help="filtrar por status"
+    )
+    task_show = task_sub.add_parser("show", help="detalha uma tarefa")
+    task_show.add_argument("task_id", type=int)
+
+    task_retry = task_sub.add_parser("retry", help="reenfileira tarefa falhada")
+    task_retry.add_argument("task_id", type=int)
+
+    worker_parser = sub.add_parser("worker", help="executa worker autonomo", parents=[shared])
+    worker_sub = worker_parser.add_subparsers(dest="worker_cmd")
+    worker_run = worker_sub.add_parser("run", help="inicia worker em loop")
+    worker_run.add_argument("--target", required=True, help="terminal alvo")
+    worker_run.add_argument("--name", default=None, help="nome do worker")
+    worker_run.add_argument("--poll-interval", type=float, default=1.0)
+    worker_run.add_argument("--db", default="tasks.db", help="caminho do banco")
+
     repl_parser = sub.add_parser(
         "repl", help="abre um chat interativo simples", parents=[shared]
     )
