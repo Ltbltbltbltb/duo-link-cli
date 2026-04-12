@@ -266,7 +266,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="agente que recebe eventos de lifecycle no canal",
     )
     worker_run.add_argument("--poll-interval", type=float, default=1.0)
-    worker_run.add_argument("--db", default=None, help="arquivo .db ou diretorio do canal")
+    worker_run.add_argument(
+        "--db", default=None, help="arquivo .db ou diretorio do canal"
+    )
     worker_run.add_argument(
         "--max-iterations",
         type=int,

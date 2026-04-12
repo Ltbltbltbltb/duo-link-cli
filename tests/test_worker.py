@@ -7,6 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
+from duo_link_cli.channel import Channel
 from duo_link_cli.tasks import TaskStore
 from duo_link_cli.worker import worker_loop
 
@@ -112,6 +113,53 @@ class WorkerTests(unittest.TestCase):
         task = self.store.get_task(1)
         self.assertEqual(task.status, "failed")
         self.assertIn("not found", task.stderr)
+
+    def test_worker_emits_status_messages_for_success(self) -> None:
+        self.store.add_task(target="terminal_a", command="echo", args=["hello"])
+        worker_loop(
+            self.store,
+            "terminal_a",
+            "w-a",
+            max_iterations=1,
+            notify_to="codex",
+            notify_session="ops",
+        )
+
+        history = Channel(self.root).history(session="ops")
+        self.assertEqual(len(history), 2)
+        self.assertEqual([m.sender for m in history], ["w-a", "w-a"])
+        self.assertEqual([m.recipient for m in history], ["codex", "codex"])
+        self.assertTrue(history[0].text.startswith("task 1 claimed"))
+        self.assertEqual(history[0].msg_type, "status")
+        self.assertIn("task 1 done rc=0", history[1].text)
+        self.assertEqual(history[1].msg_type, "status")
+
+    def test_worker_emits_requeue_and_fail_messages(self) -> None:
+        self.store.add_task(target="any", command="false", max_attempts=2)
+
+        worker_loop(
+            self.store,
+            "any",
+            "w",
+            max_iterations=1,
+            notify_to="codex",
+            notify_session="ops",
+        )
+        worker_loop(
+            self.store,
+            "any",
+            "w",
+            max_iterations=1,
+            notify_to="codex",
+            notify_session="ops",
+        )
+
+        history = Channel(self.root).history(session="ops")
+        texts = [message.text for message in history]
+        priorities = [message.priority for message in history]
+        self.assertTrue(any("requeued" in text for text in texts))
+        self.assertTrue(any("failed" in text for text in texts))
+        self.assertIn("high", priorities)
 
 
 if __name__ == "__main__":

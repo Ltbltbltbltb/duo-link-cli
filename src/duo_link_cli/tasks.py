@@ -319,6 +319,23 @@ class TaskStore:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [Task.from_row(row) for row in rows]
 
+    def stats(self) -> dict[str, Any]:
+        if not self.db_path.exists():
+            return {"total": 0, "by_status": {}, "by_target": {}}
+        with self.connect() as conn:
+            total = int(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0])
+            status_rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status ORDER BY status"
+            ).fetchall()
+            target_rows = conn.execute(
+                "SELECT target, COUNT(*) AS count FROM tasks GROUP BY target ORDER BY target"
+            ).fetchall()
+        return {
+            "total": total,
+            "by_status": {str(row["status"]): int(row["count"]) for row in status_rows},
+            "by_target": {str(row["target"]): int(row["count"]) for row in target_rows},
+        }
+
     def claim_next_task(
         self,
         *,
@@ -578,6 +595,10 @@ def list_tasks(
     ]
 
 
+def stats(source: TaskStore | sqlite3.Connection | str | Path) -> dict[str, Any]:
+    return _store_from_source(source).stats()
+
+
 __all__ = [
     "TASK_INDEX",
     "TASK_SCHEMA",
@@ -587,4 +608,5 @@ __all__ = [
     "get_task",
     "init_db",
     "list_tasks",
+    "stats",
 ]

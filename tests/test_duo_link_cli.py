@@ -17,6 +17,7 @@ if str(SRC) not in sys.path:
 
 from duo_link_cli.channel import Channel
 from duo_link_cli.cli import is_pair_message, is_repl_incoming, main
+from duo_link_cli.tasks import TaskStore
 
 
 class DuoLinkCliTests(unittest.TestCase):
@@ -1330,6 +1331,238 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertNotEqual(exit_code, 0)
         self.assertEqual(stdout, "")
         self.assertIn("channel", stderr.lower())
+
+    def test_task_add_list_and_show_json(self) -> None:
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--max-attempts",
+            "4",
+            "--",
+            "echo",
+            "hello",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("#1 pending target=terminal_a", stdout)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--json",
+            "--channel",
+            str(self.channel_dir),
+            "list",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["command"], "echo")
+        self.assertEqual(payloads[0]["args"], ["hello"])
+        self.assertEqual(payloads[0]["max_attempts"], 4)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--json",
+            "--channel",
+            str(self.channel_dir),
+            "show",
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["id"], 1)
+        self.assertEqual(payload["status"], "pending")
+
+    def test_task_retry_resets_failed_task_to_pending(self) -> None:
+        self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--max-attempts",
+            "1",
+            "--",
+            "nonexistent_command_xyz",
+        )
+
+        exit_code, _, stderr = self.run_cli(
+            "worker",
+            "--channel",
+            str(self.channel_dir),
+            "run",
+            "--target",
+            "terminal_a",
+            "--name",
+            "worker-a",
+            "--max-iterations",
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+
+        store = TaskStore(self.channel_dir)
+        self.assertEqual(store.get_task(1).status, "failed")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--json",
+            "--channel",
+            str(self.channel_dir),
+            "retry",
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "pending")
+
+    def test_worker_run_executes_task_and_enqueues_next(self) -> None:
+        exit_code, _, stderr = self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--next-json",
+            '[{"target":"terminal_b","command":"echo","args":["phase2"]}]',
+            "--",
+            "echo",
+            "phase1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worker",
+            "--channel",
+            str(self.channel_dir),
+            "run",
+            "--target",
+            "terminal_a",
+            "--name",
+            "worker-a",
+            "--max-iterations",
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("[worker] claimed task 1", stdout)
+
+        store = TaskStore(self.channel_dir)
+        first = store.get_task(1)
+        second = store.get_task(2)
+        self.assertEqual(first.status, "done")
+        self.assertEqual(first.exit_code, 0)
+        self.assertEqual(second.target, "terminal_b")
+        self.assertEqual(second.status, "pending")
+
+    def test_task_stats_reports_counts_by_status_and_target(self) -> None:
+        self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--",
+            "echo",
+            "phase1",
+        )
+        self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_b",
+            "--max-attempts",
+            "1",
+            "--",
+            "nonexistent_command_xyz",
+        )
+
+        self.run_cli(
+            "worker",
+            "--channel",
+            str(self.channel_dir),
+            "run",
+            "--target",
+            "terminal_a",
+            "--max-iterations",
+            "1",
+        )
+        self.run_cli(
+            "worker",
+            "--channel",
+            str(self.channel_dir),
+            "run",
+            "--target",
+            "terminal_b",
+            "--max-iterations",
+            "1",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "--json",
+            "--channel",
+            str(self.channel_dir),
+            "stats",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(payload["by_status"], {"done": 1, "failed": 1})
+        self.assertEqual(payload["by_target"], {"terminal_a": 1, "terminal_b": 1})
+
+    def test_worker_run_can_emit_lifecycle_messages_to_channel(self) -> None:
+        self.run_cli(
+            "task",
+            "--channel",
+            str(self.channel_dir),
+            "add",
+            "--target",
+            "terminal_a",
+            "--",
+            "echo",
+            "phase1",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worker",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "ops",
+            "run",
+            "--target",
+            "terminal_a",
+            "--name",
+            "worker-a",
+            "--notify-to",
+            "codex",
+            "--max-iterations",
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("[worker] task 1 rc=0 -> done", stdout)
+
+        history = Channel(self.channel_dir).history(session="ops")
+        self.assertEqual(len(history), 2)
+        self.assertTrue(history[0].text.startswith("task 1 claimed"))
+        self.assertIn("task 1 done rc=0", history[1].text)
+        self.assertTrue(all(msg.msg_type == "status" for msg in history))
 
 
 if __name__ == "__main__":
