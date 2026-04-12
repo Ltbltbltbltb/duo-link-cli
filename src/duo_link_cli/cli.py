@@ -46,7 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--as", dest="as_id", metavar="ID", help="identidade do agente local"
     )
     shared.add_argument("--channel", metavar="DIR", help="diretorio do canal")
-    shared.add_argument("--session", metavar="NAME", default=None, help="sessao nomeada")
+    shared.add_argument(
+        "--session", metavar="NAME", default=None, help="sessao nomeada"
+    )
     shared.add_argument("--json", action="store_true", help="saida em JSON")
 
     parser = argparse.ArgumentParser(
@@ -169,7 +171,13 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_send(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     sender = resolve_identity(args.as_id)
-    message = channel.send(sender, args.to, " ".join(args.msg), reply_to=args.reply_to)
+    message = channel.send(
+        sender,
+        args.to,
+        " ".join(args.msg),
+        reply_to=args.reply_to,
+        session=args.session,
+    )
     if args.json:
         print(json.dumps({"status": "sent", **message.as_dict()}, ensure_ascii=False))
     else:
@@ -187,7 +195,10 @@ def cmd_recv(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     recipient = resolve_identity(args.as_id)
     message = channel.recv(
-        recipient, timeout=args.timeout, poll_interval=args.poll_interval
+        recipient,
+        timeout=args.timeout,
+        poll_interval=args.poll_interval,
+        session=args.session,
     )
     if message is None:
         print(
@@ -224,7 +235,7 @@ def cmd_history(args: argparse.Namespace) -> int:
         return 2
     channel = resolve_channel(args.channel)
     agent = resolve_identity(args.as_id) if args.as_id else None
-    for message in channel.history(limit=args.n, agent=agent):
+    for message in channel.history(limit=args.n, agent=agent, session=args.session):
         if args.json:
             print(json.dumps(message.as_dict(), ensure_ascii=False))
         else:
@@ -234,7 +245,7 @@ def cmd_history(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
-    status = channel.status()
+    status = channel.status(session=args.session)
     if args.json:
         print(json.dumps(status, ensure_ascii=False))
         return 0

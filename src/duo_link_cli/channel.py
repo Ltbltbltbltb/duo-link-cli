@@ -208,7 +208,9 @@ class Channel:
         self.require_log()
         return self.log_path.read_text(encoding="utf-8").splitlines()
 
-    def history(self, limit: int = 0, agent: str | None = None) -> list[Message]:
+    def history(
+        self, limit: int = 0, agent: str | None = None, session: str | None = None
+    ) -> list[Message]:
         acked_ids = self.get_acked_ids()
         messages = []
         for line in self.read_lines():
@@ -216,6 +218,8 @@ class Channel:
             if message is None:
                 continue
             if agent and agent not in (message.sender, message.recipient):
+                continue
+            if session is not None and message.session != session:
                 continue
             if message.id in acked_ids:
                 message = Message(
@@ -226,12 +230,14 @@ class Channel:
                     text=message.text,
                     raw=message.raw,
                     acked=True,
+                    reply_to=message.reply_to,
+                    session=message.session,
                 )
             messages.append(message)
         return messages[-limit:] if limit else messages
 
-    def status(self) -> dict[str, object]:
-        messages = self.history()
+    def status(self, session: str | None = None) -> dict[str, object]:
+        messages = self.history(session=session)
         agents = sorted(
             {
                 side
@@ -251,17 +257,29 @@ class Channel:
         }
 
     def recv(
-        self, recipient: str, timeout: float = 60, poll_interval: float = 0.5
+        self,
+        recipient: str,
+        timeout: float = 60,
+        poll_interval: float = 0.5,
+        session: str | None = None,
     ) -> Message | None:
         self.require_log()
-        cursor = self.read_cursor(recipient)
+        cursor_key = f"{recipient}.{session}" if session else recipient
+        cursor = self.read_cursor(cursor_key)
         lines = self.read_lines()
+
+        def _matches(msg: Message) -> bool:
+            if msg.recipient != recipient:
+                return False
+            if session is not None and msg.session != session:
+                return False
+            return True
 
         # scan backlog from cursor position
         for idx, line in enumerate(lines[cursor:], start=cursor):
             message = self.parse_line(line)
-            if message and message.recipient == recipient:
-                self.write_cursor(recipient, idx + 1)
+            if message and _matches(message):
+                self.write_cursor(cursor_key, idx + 1)
                 return message
 
         # no backlog — wait for new messages
@@ -273,8 +291,8 @@ class Channel:
             lines = self.read_lines()
             for idx, line in enumerate(lines[seen:], start=seen):
                 message = self.parse_line(line)
-                if message and message.recipient == recipient:
-                    self.write_cursor(recipient, idx + 1)
+                if message and _matches(message):
+                    self.write_cursor(cursor_key, idx + 1)
                     return message
             seen = len(lines)
         return None

@@ -104,6 +104,46 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(payload["to"], "claude")
         self.assertEqual(payload["text"], "ola jsonl")
 
+    def test_send_supports_reply_to_and_history_exposes_it(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "mensagem raiz",
+        )
+        exit_code, stdout, stderr = self.run_cli(
+            "send",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--reply-to",
+            "1",
+            "codex",
+            "resposta encadeada",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("[sent]", stdout)
+
+        exit_code, stdout, _ = self.run_cli(
+            "history",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(payloads[0]["reply_to"], None)
+        self.assertEqual(payloads[1]["reply_to"], 1)
+        self.assertEqual(payloads[1]["msg"], "resposta encadeada")
+
     def test_send_and_history_preserve_multiline_message(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         message = "linha 1\nlinha 2"
@@ -251,6 +291,199 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(second_exit, 0)
         self.assertIn("codex -> claude: burst 2", second_stdout)
         self.assertEqual(second_stderr, "")
+
+    def test_drain_returns_all_pending_messages_in_order_as_json(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "pendente 1",
+        )
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "pendente 2",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "drain",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual([item["msg"] for item in payloads], ["pendente 1", "pendente 2"])
+
+    def test_drain_advances_cursor_and_clears_pending_view(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "claude",
+            "pendente unica",
+        )
+
+        first_exit, first_stdout, _ = self.run_cli(
+            "drain",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        second_exit, second_stdout, second_stderr = self.run_cli(
+            "drain",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(first_exit, 0)
+        self.assertIn("pendente unica", first_stdout)
+        self.assertEqual(second_exit, 0)
+        self.assertEqual(second_stdout, "")
+        self.assertEqual(second_stderr, "")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "pending",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+
+    def test_named_sessions_isolate_history_and_status(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "claude",
+            "mensagem alpha",
+        )
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "beta",
+            "claude",
+            "mensagem beta",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "mensagem alpha")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "status",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["messages"], 1)
+        self.assertIn("codex -> claude: mensagem alpha", payload["last"])
+
+    def test_named_sessions_keep_recv_cursor_separate(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "claude",
+            "pendente alpha",
+        )
+        self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "beta",
+            "claude",
+            "pendente beta",
+        )
+
+        beta_exit, beta_stdout, beta_stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "beta",
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+        )
+        alpha_exit, alpha_stdout, alpha_stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--session",
+            "alpha",
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+        )
+        self.assertEqual(beta_exit, 0)
+        self.assertEqual(beta_stderr, "")
+        self.assertIn("pendente beta", beta_stdout)
+        self.assertEqual(alpha_exit, 0)
+        self.assertEqual(alpha_stderr, "")
+        self.assertIn("pendente alpha", alpha_stdout)
 
     def test_history_json_filters_messages_for_agent(self) -> None:
         self.run_cli("init", str(self.channel_dir))
