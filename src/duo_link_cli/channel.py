@@ -261,6 +261,41 @@ class Channel:
             seen = len(lines)
         return None
 
+    def drain(self, recipient: str) -> list[Message]:
+        """Consume all pending messages for recipient from cursor position."""
+        self.require_log()
+        cursor = self.read_cursor(recipient)
+        acked_ids = self.get_acked_ids()
+        lines = self.read_lines()
+        messages = []
+        last_idx = cursor
+        for idx, line in enumerate(lines[cursor:], start=cursor):
+            message = self.parse_line(line)
+            if message and message.recipient == recipient:
+                if message.id in acked_ids:
+                    message = Message(
+                        id=message.id, ts=message.ts, sender=message.sender,
+                        recipient=message.recipient, text=message.text,
+                        raw=message.raw, acked=True,
+                    )
+                messages.append(message)
+            last_idx = idx + 1
+        if lines[cursor:]:
+            self.write_cursor(recipient, last_idx)
+        return messages
+
+    def pending(self, recipient: str) -> list[Message]:
+        """List pending (unconsumed) messages for recipient without advancing cursor."""
+        self.require_log()
+        cursor = self.read_cursor(recipient)
+        lines = self.read_lines()
+        messages = []
+        for line in lines[cursor:]:
+            message = self.parse_line(line)
+            if message and message.recipient == recipient:
+                messages.append(message)
+        return messages
+
     def stream(
         self,
         agent: str | None = None,
