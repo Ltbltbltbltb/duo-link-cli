@@ -565,6 +565,203 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(payloads[0]["reply_to"], 1)
         self.assertEqual(payloads[0]["session"], "alpha")
 
+    def test_send_supports_priority_and_type_in_history_json(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        exit_code, stdout, stderr = self.run_cli(
+            "send",
+            "--as",
+            "codex",
+            "--channel",
+            str(self.channel_dir),
+            "--priority",
+            "urgent",
+            "--type",
+            "status",
+            "claude",
+            "alerta operacional",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("[sent]", stdout)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(payloads[0]["priority"], "urgent")
+        self.assertEqual(payloads[0]["type"], "status")
+
+    def test_history_filters_by_priority(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        records = [
+            {
+                "id": 1,
+                "ts": "2026-04-12T17:40:00-03:00",
+                "from": "codex",
+                "to": "claude",
+                "text": "normal",
+                "priority": "normal",
+                "type": "text",
+            },
+            {
+                "id": 2,
+                "ts": "2026-04-12T17:40:01-03:00",
+                "from": "codex",
+                "to": "claude",
+                "text": "urgente",
+                "priority": "urgent",
+                "type": "status",
+            },
+        ]
+        (self.channel_dir / "chat.log").write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "--priority",
+            "urgent",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "urgente")
+        self.assertEqual(payloads[0]["priority"], "urgent")
+
+    def test_recv_filters_by_type_and_preserves_other_messages(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        records = [
+            {
+                "id": 1,
+                "ts": "2026-04-12T17:41:00-03:00",
+                "from": "codex",
+                "to": "claude",
+                "text": "status primeiro",
+                "priority": "normal",
+                "type": "status",
+            },
+            {
+                "id": 2,
+                "ts": "2026-04-12T17:41:01-03:00",
+                "from": "codex",
+                "to": "claude",
+                "text": "comando depois",
+                "priority": "high",
+                "type": "command",
+            },
+        ]
+        (self.channel_dir / "chat.log").write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--type",
+            "command",
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["msg"], "comando depois")
+        self.assertEqual(payload["type"], "command")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "recv",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--timeout",
+            "0.2",
+            "--poll-interval",
+            "0.05",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["msg"], "status primeiro")
+        self.assertEqual(payload["type"], "status")
+
+    def test_drain_filters_by_priority_and_leaves_other_pending(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        records = [
+            {
+                "id": 1,
+                "ts": "2026-04-12T17:42:00-03:00",
+                "from": "codex",
+                "to": "claude",
+                "text": "baixa prioridade",
+                "priority": "low",
+                "type": "text",
+            },
+            {
+                "id": 2,
+                "ts": "2026-04-12T17:42:01-03:00",
+                "from": "codex",
+                "to": "claude",
+                "text": "urgente",
+                "priority": "urgent",
+                "type": "error",
+            },
+        ]
+        (self.channel_dir / "chat.log").write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "drain",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--priority",
+            "urgent",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "urgente")
+        self.assertEqual(payloads[0]["priority"], "urgent")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "pending",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payloads = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["msg"], "baixa prioridade")
+        self.assertEqual(payloads[0]["priority"], "low")
+
     def test_history_json_filters_messages_for_agent(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         channel = Channel(self.channel_dir)

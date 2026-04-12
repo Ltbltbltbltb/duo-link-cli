@@ -108,6 +108,9 @@ class Channel:
     def cursor_path(self, agent: str) -> Path:
         return self.root / f".cursor.{agent}"
 
+    def consumed_path(self, consumer: str) -> Path:
+        return self.root / f".consumed.{consumer}"
+
     def read_cursor(self, agent: str) -> int:
         path = self.cursor_path(agent)
         if path.exists():
@@ -119,6 +122,31 @@ class Channel:
 
     def write_cursor(self, agent: str, position: int) -> None:
         self.cursor_path(agent).write_text(str(position), encoding="utf-8")
+
+    def read_consumed(self, consumer: str) -> set[int]:
+        path = self.consumed_path(consumer)
+        if not path.exists():
+            return set()
+        ids = set()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ids.add(int(line))
+            except ValueError:
+                pass
+        return ids
+
+    def write_consumed(self, consumer: str, ids: set[int]) -> None:
+        self.consumed_path(consumer).write_text(
+            "".join(f"{msg_id}\n" for msg_id in sorted(ids)),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def consumer_key(recipient: str, session: str | None = None) -> str:
+        return f"{recipient}.{session}" if session else recipient
 
     def get_acked_ids(self) -> set[int]:
         if not self.acks_path.exists():
@@ -163,6 +191,8 @@ class Channel:
         text: str,
         reply_to: int | None = None,
         session: str | None = None,
+        priority: str = "normal",
+        msg_type: str = "text",
     ) -> Message:
         self.init()
         ts = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -175,6 +205,8 @@ class Channel:
                 "from": sender,
                 "to": recipient,
                 "text": text,
+                "priority": priority,
+                "type": msg_type,
             }
             if reply_to is not None:
                 record["reply_to"] = reply_to
@@ -190,6 +222,8 @@ class Channel:
             recipient=recipient,
             text=text,
             session=session,
+            priority=priority,
+            msg_type=msg_type,
             raw=f"[{ts}] {sender} -> {recipient}: {text}",
         )
 
@@ -205,6 +239,8 @@ class Channel:
             # reset all cursors
             for cursor_file in self.root.glob(".cursor.*"):
                 cursor_file.write_text("0", encoding="utf-8")
+            for consumed_file in self.root.glob(".consumed.*"):
+                consumed_file.write_text("", encoding="utf-8")
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         return archive
 
@@ -278,6 +314,8 @@ class Channel:
             # reset all cursors
             for cursor_file in self.root.glob(".cursor.*"):
                 cursor_file.write_text("0", encoding="utf-8")
+            for consumed_file in self.root.glob(".consumed.*"):
+                consumed_file.write_text("", encoding="utf-8")
             # clear acks (IDs changed)
             if self.acks_path.exists():
                 self.acks_path.write_text("", encoding="utf-8")
@@ -314,6 +352,8 @@ class Channel:
         sender: str | None = None,
         recipient: str | None = None,
         reply_to: int | None = None,
+        priority: str | None = None,
+        msg_type: str | None = None,
     ) -> list[Message]:
         acked_ids = self.get_acked_ids()
         messages = []
@@ -331,6 +371,10 @@ class Channel:
                 continue
             if reply_to is not None and message.reply_to != reply_to:
                 continue
+            if priority is not None and message.priority != priority:
+                continue
+            if msg_type is not None and message.msg_type != msg_type:
+                continue
             if message.id in acked_ids:
                 message = Message(
                     id=message.id,
@@ -342,6 +386,8 @@ class Channel:
                     acked=True,
                     reply_to=message.reply_to,
                     session=message.session,
+                    priority=message.priority,
+                    msg_type=message.msg_type,
                 )
             messages.append(message)
         return messages[-limit:] if limit else messages
@@ -372,10 +418,12 @@ class Channel:
         timeout: float = 60,
         poll_interval: float = 0.5,
         session: str | None = None,
+        priority: str | None = None,
+        msg_type: str | None = None,
     ) -> Message | None:
         self.require_log()
-        cursor_key = f"{recipient}.{session}" if session else recipient
-        cursor = self.read_cursor(cursor_key)
+        consumer_key = self.consumer_key(recipient, session)
+        consumed_ids = self.read_consumed(consumer_key)
         lines = self.read_lines()
 
         def _matches(msg: Message) -> bool:
@@ -383,14 +431,26 @@ class Channel:
                 return False
             if session is not None and msg.session != session:
                 return False
+            if priority is not None and msg.priority != priority:
+                return False
+            if msg_type is not None and msg.msg_type != msg_type:
+                return False
             return True
 
-        # scan backlog from cursor position
-        for idx, line in enumerate(lines[cursor:], start=cursor):
+        def _consume(message: Message | None) -> Message | None:
+            if message is None or not _matches(message):
+                return None
+            if message.id in consumed_ids:
+                return None
+            consumed_ids.add(message.id)
+            self.write_consumed(consumer_key, consumed_ids)
+            return message
+
+        for line in lines:
             message = self.parse_line(line)
-            if message and _matches(message):
-                self.write_cursor(cursor_key, idx + 1)
-                return message
+            consumed = _consume(message)
+            if consumed is not None:
+                return consumed
 
         # no backlog — wait for new messages
         seen = len(lines)
@@ -399,49 +459,74 @@ class Channel:
             remaining = max(poll_interval, min(5.0, deadline - time.time()))
             self.wait_for_change(remaining)
             lines = self.read_lines()
-            for idx, line in enumerate(lines[seen:], start=seen):
+            for line in lines[seen:]:
                 message = self.parse_line(line)
-                if message and _matches(message):
-                    self.write_cursor(cursor_key, idx + 1)
-                    return message
+                consumed = _consume(message)
+                if consumed is not None:
+                    return consumed
             seen = len(lines)
         return None
 
-    def drain(self, recipient: str) -> list[Message]:
+    def drain(
+        self,
+        recipient: str,
+        priority: str | None = None,
+        msg_type: str | None = None,
+    ) -> list[Message]:
         """Consume and auto-ack all pending messages for recipient."""
         self.require_log()
-        cursor = self.read_cursor(recipient)
+        consumer_key = self.consumer_key(recipient)
+        consumed_ids = self.read_consumed(consumer_key)
+        acked_ids = self.get_acked_ids()
         lines = self.read_lines()
         messages = []
-        last_idx = cursor
-        for idx, line in enumerate(lines[cursor:], start=cursor):
+        newly_consumed: set[int] = set()
+        for line in lines:
             message = self.parse_line(line)
-            if message and message.recipient == recipient:
+            if not message or message.recipient != recipient:
+                continue
+            if priority is not None and message.priority != priority:
+                continue
+            if msg_type is not None and message.msg_type != msg_type:
+                continue
+            if message.id in consumed_ids:
+                continue
+            newly_consumed.add(message.id)
+            if message.id not in acked_ids:
                 self.ack(message.id, recipient)
-                message = Message(
-                    id=message.id,
-                    ts=message.ts,
-                    sender=message.sender,
-                    recipient=message.recipient,
-                    text=message.text,
-                    raw=message.raw,
-                    acked=True,
-                )
-                messages.append(message)
-            last_idx = idx + 1
-        if lines[cursor:]:
-            self.write_cursor(recipient, last_idx)
+            message = Message(
+                id=message.id,
+                ts=message.ts,
+                sender=message.sender,
+                recipient=message.recipient,
+                text=message.text,
+                raw=message.raw,
+                acked=True,
+                reply_to=message.reply_to,
+                session=message.session,
+                priority=message.priority,
+                msg_type=message.msg_type,
+            )
+            messages.append(message)
+        if newly_consumed:
+            consumed_ids |= newly_consumed
+            self.write_consumed(consumer_key, consumed_ids)
         return messages
 
     def pending(self, recipient: str) -> list[Message]:
         """List pending (unconsumed) messages for recipient without advancing cursor."""
         self.require_log()
-        cursor = self.read_cursor(recipient)
+        consumer_key = self.consumer_key(recipient)
+        consumed_ids = self.read_consumed(consumer_key)
         lines = self.read_lines()
         messages = []
-        for line in lines[cursor:]:
+        for line in lines:
             message = self.parse_line(line)
-            if message and message.recipient == recipient:
+            if (
+                message
+                and message.recipient == recipient
+                and message.id not in consumed_ids
+            ):
                 messages.append(message)
         return messages
 
@@ -501,6 +586,8 @@ class Channel:
             text = obj.get("text", "")
             reply_to = obj.get("reply_to")
             session = obj.get("session")
+            priority = obj.get("priority", "normal")
+            msg_type = obj.get("type", "text")
             return Message(
                 id=msg_id,
                 ts=ts,
@@ -509,6 +596,8 @@ class Channel:
                 text=text,
                 raw=f"[{ts}] {sender} -> {recipient}: {text}",
                 reply_to=reply_to,
+                priority=priority,
+                msg_type=msg_type,
                 session=session,
             )
         except (json.JSONDecodeError, TypeError):

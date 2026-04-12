@@ -75,6 +75,19 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser.add_argument(
         "--reply-to", type=int, default=None, help="ID da mensagem sendo respondida"
     )
+    send_parser.add_argument(
+        "--priority",
+        choices=["low", "normal", "high", "urgent"],
+        default="normal",
+        help="prioridade (default: normal)",
+    )
+    send_parser.add_argument(
+        "--type",
+        dest="msg_type",
+        choices=["text", "command", "status", "error"],
+        default="text",
+        help="tipo de mensagem (default: text)",
+    )
 
     recv_parser = sub.add_parser(
         "recv", help="aguarda mensagem para voce", parents=[shared]
@@ -87,6 +100,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="intervalo de polling quando necessario",
+    )
+    recv_parser.add_argument(
+        "--type",
+        dest="msg_type_filter",
+        default=None,
+        choices=["text", "command", "status", "error"],
+        help="filtrar por tipo",
+    )
+    recv_parser.add_argument(
+        "--priority",
+        dest="priority_filter",
+        default=None,
+        choices=["low", "normal", "high", "urgent"],
+        help="filtrar por prioridade",
     )
 
     watch_parser = sub.add_parser(
@@ -115,6 +142,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="filtrar por reply_to ID",
     )
+    history_parser.add_argument(
+        "--priority",
+        dest="priority_filter",
+        default=None,
+        choices=["low", "normal", "high", "urgent"],
+        help="filtrar por prioridade",
+    )
+    history_parser.add_argument(
+        "--type",
+        dest="type_filter",
+        default=None,
+        choices=["text", "command", "status", "error"],
+        help="filtrar por tipo",
+    )
 
     sub.add_parser("status", help="resume o canal", parents=[shared])
     sub.add_parser("rotate", help="arquiva chat.log e inicia novo", parents=[shared])
@@ -124,8 +165,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ack_parser.add_argument("msg_id", type=int, help="ID da mensagem a confirmar")
 
-    sub.add_parser(
+    drain_parser = sub.add_parser(
         "drain", help="consome todas as mensagens pendentes", parents=[shared]
+    )
+    drain_parser.add_argument(
+        "--priority",
+        dest="priority_filter",
+        default=None,
+        choices=["low", "normal", "high", "urgent"],
+        help="filtrar por prioridade",
+    )
+    drain_parser.add_argument(
+        "--type",
+        dest="type_filter",
+        default=None,
+        choices=["text", "command", "status", "error"],
+        help="filtrar por tipo",
     )
     sub.add_parser(
         "pending", help="lista mensagens pendentes sem consumir", parents=[shared]
@@ -215,6 +270,8 @@ def cmd_send(args: argparse.Namespace) -> int:
         " ".join(args.msg),
         reply_to=args.reply_to,
         session=args.session,
+        priority=args.priority,
+        msg_type=args.msg_type,
     )
     if args.json:
         print(json.dumps({"status": "sent", **message.as_dict()}, ensure_ascii=False))
@@ -237,6 +294,8 @@ def cmd_recv(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         poll_interval=args.poll_interval,
         session=args.session,
+        priority=args.priority_filter,
+        msg_type=args.msg_type_filter,
     )
     if message is None:
         print(
@@ -280,6 +339,8 @@ def cmd_history(args: argparse.Namespace) -> int:
         sender=args.from_filter,
         recipient=args.to_filter,
         reply_to=args.reply_to_filter,
+        priority=args.priority_filter,
+        msg_type=args.type_filter,
     ):
         if args.json:
             print(json.dumps(message.as_dict(), ensure_ascii=False))
@@ -333,7 +394,11 @@ def cmd_ack(args: argparse.Namespace) -> int:
 def cmd_drain(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     agent = resolve_identity(args.as_id)
-    messages = channel.drain(agent)
+    messages = channel.drain(
+        agent,
+        priority=args.priority_filter,
+        msg_type=args.type_filter,
+    )
     if args.json:
         for m in messages:
             print(json.dumps(m.as_dict(), ensure_ascii=False))
