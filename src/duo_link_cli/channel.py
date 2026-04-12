@@ -214,6 +214,59 @@ class Channel:
         lines = [json.dumps(m.as_dict(), ensure_ascii=False) for m in messages]
         return "\n".join(lines) + "\n" if lines else ""
 
+    def import_jsonl(self, data: str) -> int:
+        """Import JSONL data into the channel. Returns count of imported messages."""
+        self.init()
+        count = 0
+        with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            existing = len(self.log_path.read_text(encoding="utf-8").splitlines())
+            with self.log_path.open("a", encoding="utf-8") as log_handle:
+                for line in data.strip().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        existing += 1
+                        obj["id"] = existing
+                        log_handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        count += 1
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        return count
+
+    def purge(self, keep: int = 0) -> int:
+        """Remove old messages, keeping the last N. Returns count of purged messages."""
+        self.require_log()
+        with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            lines = self.log_path.read_text(encoding="utf-8").splitlines()
+            total = len(lines)
+            if keep <= 0 or keep >= total:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                return 0
+            kept = lines[-keep:]
+            # renumber IDs
+            renumbered = []
+            for i, line in enumerate(kept, start=1):
+                try:
+                    obj = json.loads(line)
+                    obj["id"] = i
+                    renumbered.append(json.dumps(obj, ensure_ascii=False))
+                except (json.JSONDecodeError, TypeError):
+                    renumbered.append(line)
+            self.log_path.write_text("\n".join(renumbered) + "\n", encoding="utf-8")
+            # reset all cursors
+            for cursor_file in self.root.glob(".cursor.*"):
+                cursor_file.write_text("0", encoding="utf-8")
+            # clear acks (IDs changed)
+            if self.acks_path.exists():
+                self.acks_path.write_text("", encoding="utf-8")
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        return total - keep
+
     def stats(self) -> dict[str, object]:
         """Per-agent statistics."""
         messages = self.history()
