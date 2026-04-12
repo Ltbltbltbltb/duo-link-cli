@@ -151,12 +151,14 @@ O projeto esta funcional e passou por uma auditoria tecnica com melhorias aplica
 - rotacao de log com arquivamento
 - validacao de inputs e contrato CLI uniforme
 - CI com GitHub Actions (Python 3.10/3.11/3.12)
-- 35 testes cobrindo fluxos felizes e bordas
+- prioridades (low/normal/high/urgent) e tipos (text/command/status/error)
+- filtros por prioridade e tipo em recv, drain e history
+- consumed tracking per-agent para drain seletivo
+- 41 testes cobrindo fluxos felizes e bordas
 
 Ainda nao implementado:
 
-- ACK formal, sessoes nomeadas ou multiplexacao de canais
-- rotacao de log
 - backend alternativo (socket Unix)
+- plugin de transporte customizado
 
 Para o caso de uso que originou a ferramenta, isso foi suficiente para coordenacao real entre agentes CLI.
