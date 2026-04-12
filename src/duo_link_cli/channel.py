@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -12,20 +13,24 @@ from pathlib import Path
 from typing import Iterator
 
 DEFAULT_CONTEXT_AGENTS = ("codex", "claude")
-MESSAGE_RE = re.compile(r"^\[(?P<ts>.+?)\] (?P<sender>.+?) -> (?P<recipient>.+?): (?P<text>.*)$")
+MESSAGE_RE = re.compile(
+    r"^\[(?P<ts>.+?)\] (?P<sender>.+?) -> (?P<recipient>.+?): (?P<text>.*)$"
+)
 HAS_INOTIFY = shutil.which("inotifywait") is not None
 
 
 @dataclass(frozen=True)
 class Message:
+    id: int
     ts: str
     sender: str
     recipient: str
     text: str
     raw: str
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict[str, object]:
         return {
+            "id": self.id,
             "ts": self.ts,
             "from": self.sender,
             "to": self.recipient,
@@ -40,7 +45,12 @@ class Channel:
         self.lock_path = root / ".chat.lock"
 
     @classmethod
-    def resolve(cls, explicit: str | None = None, cwd: Path | None = None, create_if_missing: bool = False) -> "Channel":
+    def resolve(
+        cls,
+        explicit: str | None = None,
+        cwd: Path | None = None,
+        create_if_missing: bool = False,
+    ) -> "Channel":
         if explicit:
             return cls(Path(explicit).expanduser().resolve())
 
@@ -106,13 +116,28 @@ class Channel:
 
     def send(self, sender: str, recipient: str, text: str) -> Message:
         self.init()
-        raw = f"[{datetime.now().astimezone().isoformat(timespec='seconds')}] {sender} -> {recipient}: {text}"
+        ts = datetime.now().astimezone().isoformat(timespec="seconds")
         with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            msg_id = len(self.log_path.read_text(encoding="utf-8").splitlines()) + 1
+            record = {
+                "id": msg_id,
+                "ts": ts,
+                "from": sender,
+                "to": recipient,
+                "text": text,
+            }
             with self.log_path.open("a", encoding="utf-8") as log_handle:
-                log_handle.write(raw + "\n")
+                log_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        return self.parse_line(raw)
+        return Message(
+            id=msg_id,
+            ts=ts,
+            sender=sender,
+            recipient=recipient,
+            text=text,
+            raw=f"[{ts}] {sender} -> {recipient}: {text}",
+        )
 
     def read_lines(self) -> list[str]:
         self.init()
@@ -131,7 +156,13 @@ class Channel:
 
     def status(self) -> dict[str, object]:
         messages = self.history()
-        agents = sorted({side for message in messages for side in (message.sender, message.recipient)})
+        agents = sorted(
+            {
+                side
+                for message in messages
+                for side in (message.sender, message.recipient)
+            }
+        )
         return {
             "channel": str(self.root),
             "messages": len(messages),
@@ -140,22 +171,41 @@ class Channel:
             "has_inotify": HAS_INOTIFY,
         }
 
-    def recv(self, recipient: str, timeout: float = 60, poll_interval: float = 0.5) -> Message | None:
+    def recv(
+        self, recipient: str, timeout: float = 60, poll_interval: float = 0.5
+    ) -> Message | None:
         self.init()
-        seen = len(self.read_lines())
+        cursor = self.read_cursor(recipient)
+        lines = self.read_lines()
+
+        # scan backlog from cursor position
+        for idx, line in enumerate(lines[cursor:], start=cursor):
+            message = self.parse_line(line)
+            if message and message.recipient == recipient:
+                self.write_cursor(recipient, idx + 1)
+                return message
+
+        # no backlog — wait for new messages
+        seen = len(lines)
         deadline = time.time() + timeout
         while time.time() < deadline:
             remaining = max(poll_interval, min(5.0, deadline - time.time()))
             self.wait_for_change(remaining)
             lines = self.read_lines()
-            for line in lines[seen:]:
+            for idx, line in enumerate(lines[seen:], start=seen):
                 message = self.parse_line(line)
                 if message and message.recipient == recipient:
+                    self.write_cursor(recipient, idx + 1)
                     return message
             seen = len(lines)
         return None
 
-    def stream(self, agent: str | None = None, include_all: bool = False, poll_interval: float = 0.5) -> Iterator[Message]:
+    def stream(
+        self,
+        agent: str | None = None,
+        include_all: bool = False,
+        poll_interval: float = 0.5,
+    ) -> Iterator[Message]:
         self.init()
         seen = len(self.read_lines())
         while True:
@@ -165,14 +215,26 @@ class Channel:
                 message = self.parse_line(line)
                 if message is None:
                     continue
-                if include_all or agent is None or agent in (message.sender, message.recipient):
+                if (
+                    include_all
+                    or agent is None
+                    or agent in (message.sender, message.recipient)
+                ):
                     yield message
             seen = len(lines)
 
     def wait_for_change(self, timeout_s: float) -> None:
         if HAS_INOTIFY:
             subprocess.run(
-                ["inotifywait", "-qq", "-t", str(max(1, int(timeout_s))), "-e", "modify", str(self.log_path)],
+                [
+                    "inotifywait",
+                    "-qq",
+                    "-t",
+                    str(max(1, int(timeout_s))),
+                    "-e",
+                    "modify",
+                    str(self.log_path),
+                ],
                 capture_output=True,
                 check=False,
             )
@@ -180,14 +242,33 @@ class Channel:
         time.sleep(timeout_s)
 
     @staticmethod
-    def parse_line(line: str) -> Message | None:
-        match = MESSAGE_RE.match(line.strip())
+    def parse_line(line: str, line_number: int = 0) -> Message | None:
+        stripped = line.strip()
+        if not stripped:
+            return None
+        # try JSONL first
+        try:
+            obj = json.loads(stripped)
+            msg_id = obj.get("id", line_number)
+            ts = obj.get("ts", "")
+            sender = obj.get("from", "")
+            recipient = obj.get("to", "")
+            text = obj.get("text", "")
+            return Message(
+                id=msg_id, ts=ts, sender=sender, recipient=recipient, text=text,
+                raw=f"[{ts}] {sender} -> {recipient}: {text}",
+            )
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # fallback: legacy string format
+        match = MESSAGE_RE.match(stripped)
         if not match:
             return None
         return Message(
+            id=line_number,
             ts=match.group("ts"),
             sender=match.group("sender"),
             recipient=match.group("recipient"),
             text=match.group("text"),
-            raw=line.strip(),
+            raw=stripped,
         )

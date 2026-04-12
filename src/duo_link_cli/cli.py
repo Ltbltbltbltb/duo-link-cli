@@ -30,6 +30,17 @@ def resolve_identity(explicit: str | None) -> str:
     raise SystemExit("error: no identity. Use --as or set $DUO_ID/$DUO_AGENT")
 
 
+def is_pair_message(message, self_id: str, peer_id: str) -> bool:
+    return (
+        (message.sender == self_id and message.recipient == peer_id)
+        or (message.sender == peer_id and message.recipient == self_id)
+    )
+
+
+def is_repl_incoming(message, self_id: str, peer_id: str) -> bool:
+    return message.sender == peer_id and message.recipient == self_id
+
+
 def build_parser() -> argparse.ArgumentParser:
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument(
@@ -119,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    if args.dir and args.channel:
+        print("error: use 'dir' or '--channel', not both", file=sys.stderr)
+        return 2
     if args.dir:
         channel = Channel(Path(args.dir).expanduser().resolve())
     else:
@@ -221,22 +235,28 @@ def cmd_repl(args: argparse.Namespace) -> int:
     sender = resolve_identity(args.as_id)
     stop_event = threading.Event()
 
-    history = channel.history(limit=args.history, agent=sender)
-    for message in history:
+    history = [
+        message
+        for message in channel.history()
+        if is_pair_message(message, sender, args.to)
+    ]
+    for message in history[-args.history :]:
         print(message.raw)
     print(
         f"REPL ativo para {sender} <-> {args.to}. Use /quit para sair.", file=sys.stderr
     )
 
     def receive_loop() -> None:
-        while not stop_event.is_set():
-            message = channel.recv(
-                sender, timeout=args.poll_interval, poll_interval=args.poll_interval
-            )
-            if message is None:
-                continue
-            print(f"\n{message.raw}")
-            print("> ", end="", flush=True)
+        try:
+            for message in channel.stream(agent=sender, poll_interval=args.poll_interval):
+                if stop_event.is_set():
+                    break
+                if not is_repl_incoming(message, sender, args.to):
+                    continue
+                print(f"\n{message.raw}")
+                print("> ", end="", flush=True)
+        except FileNotFoundError:
+            return
 
     watcher = threading.Thread(target=receive_loop, daemon=True)
     watcher.start()
@@ -265,25 +285,29 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
-    if args.cmd == "init":
-        return cmd_init(args)
-    if args.cmd == "send":
-        return cmd_send(args)
-    if args.cmd == "recv":
-        return cmd_recv(args)
-    if args.cmd == "watch":
-        return cmd_watch(args)
-    if args.cmd == "history":
-        return cmd_history(args)
-    if args.cmd == "status":
-        return cmd_status(args)
-    if args.cmd == "repl":
-        return cmd_repl(args)
-    if args.cmd == "context":
-        if args.context_cmd == "show":
-            return cmd_context_show(args)
-        if args.context_cmd == "set":
-            return cmd_context_set(args)
-        parser.error("context exige show ou set")
-    parser.error(f"comando invalido: {args.cmd}")
-    return 2
+    try:
+        if args.cmd == "init":
+            return cmd_init(args)
+        if args.cmd == "send":
+            return cmd_send(args)
+        if args.cmd == "recv":
+            return cmd_recv(args)
+        if args.cmd == "watch":
+            return cmd_watch(args)
+        if args.cmd == "history":
+            return cmd_history(args)
+        if args.cmd == "status":
+            return cmd_status(args)
+        if args.cmd == "repl":
+            return cmd_repl(args)
+        if args.cmd == "context":
+            if args.context_cmd == "show":
+                return cmd_context_show(args)
+            if args.context_cmd == "set":
+                return cmd_context_set(args)
+            parser.error("context exige show ou set")
+        parser.error(f"comando invalido: {args.cmd}")
+        return 2
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
