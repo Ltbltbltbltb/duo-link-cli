@@ -28,9 +28,11 @@ class Message:
     text: str
     raw: str
     acked: bool = False
+    reply_to: int | None = None
+    session: str | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "id": self.id,
             "ts": self.ts,
             "from": self.sender,
@@ -38,6 +40,10 @@ class Message:
             "msg": self.text,
             "acked": self.acked,
         }
+        d["reply_to"] = self.reply_to
+        if self.session is not None:
+            d["session"] = self.session
+        return d
 
 
 class Channel:
@@ -146,19 +152,30 @@ class Channel:
             raise FileNotFoundError(f"context not found for agent '{agent}': {path}")
         return path.read_text(encoding="utf-8")
 
-    def send(self, sender: str, recipient: str, text: str) -> Message:
+    def send(
+        self,
+        sender: str,
+        recipient: str,
+        text: str,
+        reply_to: int | None = None,
+        session: str | None = None,
+    ) -> Message:
         self.init()
         ts = datetime.now().astimezone().isoformat(timespec="seconds")
         with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
             msg_id = len(self.log_path.read_text(encoding="utf-8").splitlines()) + 1
-            record = {
+            record: dict[str, object] = {
                 "id": msg_id,
                 "ts": ts,
                 "from": sender,
                 "to": recipient,
                 "text": text,
             }
+            if reply_to is not None:
+                record["reply_to"] = reply_to
+            if session is not None:
+                record["session"] = session
             with self.log_path.open("a", encoding="utf-8") as log_handle:
                 log_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
@@ -168,6 +185,7 @@ class Channel:
             sender=sender,
             recipient=recipient,
             text=text,
+            session=session,
             raw=f"[{ts}] {sender} -> {recipient}: {text}",
         )
 
@@ -262,22 +280,25 @@ class Channel:
         return None
 
     def drain(self, recipient: str) -> list[Message]:
-        """Consume all pending messages for recipient from cursor position."""
+        """Consume and auto-ack all pending messages for recipient."""
         self.require_log()
         cursor = self.read_cursor(recipient)
-        acked_ids = self.get_acked_ids()
         lines = self.read_lines()
         messages = []
         last_idx = cursor
         for idx, line in enumerate(lines[cursor:], start=cursor):
             message = self.parse_line(line)
             if message and message.recipient == recipient:
-                if message.id in acked_ids:
-                    message = Message(
-                        id=message.id, ts=message.ts, sender=message.sender,
-                        recipient=message.recipient, text=message.text,
-                        raw=message.raw, acked=True,
-                    )
+                self.ack(message.id, recipient)
+                message = Message(
+                    id=message.id,
+                    ts=message.ts,
+                    sender=message.sender,
+                    recipient=message.recipient,
+                    text=message.text,
+                    raw=message.raw,
+                    acked=True,
+                )
                 messages.append(message)
             last_idx = idx + 1
         if lines[cursor:]:
@@ -350,6 +371,8 @@ class Channel:
             sender = obj.get("from", "")
             recipient = obj.get("to", "")
             text = obj.get("text", "")
+            reply_to = obj.get("reply_to")
+            session = obj.get("session")
             return Message(
                 id=msg_id,
                 ts=ts,
@@ -357,6 +380,8 @@ class Channel:
                 recipient=recipient,
                 text=text,
                 raw=f"[{ts}] {sender} -> {recipient}: {text}",
+                reply_to=reply_to,
+                session=session,
             )
         except (json.JSONDecodeError, TypeError):
             pass

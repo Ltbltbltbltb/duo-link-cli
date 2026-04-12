@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--as", dest="as_id", metavar="ID", help="identidade do agente local"
     )
     shared.add_argument("--channel", metavar="DIR", help="diretorio do canal")
+    shared.add_argument("--session", metavar="NAME", default=None, help="sessao nomeada")
     shared.add_argument("--json", action="store_true", help="saida em JSON")
 
     parser = argparse.ArgumentParser(
@@ -69,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser = sub.add_parser("send", help="envia uma mensagem", parents=[shared])
     send_parser.add_argument("to", help="destinatario")
     send_parser.add_argument("msg", nargs="+", help="texto da mensagem")
+    send_parser.add_argument(
+        "--reply-to", type=int, default=None, help="ID da mensagem sendo respondida"
+    )
 
     recv_parser = sub.add_parser(
         "recv", help="aguarda mensagem para voce", parents=[shared]
@@ -104,6 +108,13 @@ def build_parser() -> argparse.ArgumentParser:
         "ack", help="confirma recebimento de mensagem", parents=[shared]
     )
     ack_parser.add_argument("msg_id", type=int, help="ID da mensagem a confirmar")
+
+    sub.add_parser(
+        "drain", help="consome todas as mensagens pendentes", parents=[shared]
+    )
+    sub.add_parser(
+        "pending", help="lista mensagens pendentes sem consumir", parents=[shared]
+    )
 
     repl_parser = sub.add_parser(
         "repl", help="abre um chat interativo simples", parents=[shared]
@@ -158,7 +169,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_send(args: argparse.Namespace) -> int:
     channel = resolve_channel(args.channel)
     sender = resolve_identity(args.as_id)
-    message = channel.send(sender, args.to, " ".join(args.msg))
+    message = channel.send(sender, args.to, " ".join(args.msg), reply_to=args.reply_to)
     if args.json:
         print(json.dumps({"status": "sent", **message.as_dict()}, ensure_ascii=False))
     else:
@@ -260,6 +271,36 @@ def cmd_ack(args: argparse.Namespace) -> int:
         )
     else:
         print(f"[ack] message {args.msg_id} acknowledged by {agent}")
+    return 0
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel)
+    agent = resolve_identity(args.as_id)
+    messages = channel.drain(agent)
+    if args.json:
+        for m in messages:
+            print(json.dumps(m.as_dict(), ensure_ascii=False))
+    else:
+        if not messages:
+            print(f"[drain] no pending messages for {agent}")
+        for m in messages:
+            print(m.raw)
+    return 0
+
+
+def cmd_pending(args: argparse.Namespace) -> int:
+    channel = resolve_channel(args.channel)
+    agent = resolve_identity(args.as_id)
+    messages = channel.pending(agent)
+    if args.json:
+        for m in messages:
+            print(json.dumps(m.as_dict(), ensure_ascii=False))
+    else:
+        if not messages:
+            print(f"[pending] no pending messages for {agent}")
+        for m in messages:
+            print(m.raw)
     return 0
 
 
@@ -371,6 +412,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_rotate(args)
         if args.cmd == "ack":
             return cmd_ack(args)
+        if args.cmd == "drain":
+            return cmd_drain(args)
+        if args.cmd == "pending":
+            return cmd_pending(args)
         if args.cmd == "repl":
             return cmd_repl(args)
         if args.cmd == "context":
