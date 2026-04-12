@@ -147,6 +147,21 @@ class Channel:
             raw=f"[{ts}] {sender} -> {recipient}: {text}",
         )
 
+    def rotate(self) -> Path:
+        """Archive current chat.log and start fresh. Returns archive path."""
+        self.require_log()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive = self.root / f"chat.log.{ts}"
+        with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            self.log_path.rename(archive)
+            self.log_path.touch()
+            # reset all cursors
+            for cursor_file in self.root.glob(".cursor.*"):
+                cursor_file.write_text("0", encoding="utf-8")
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        return archive
+
     def read_lines(self) -> list[str]:
         self.require_log()
         return self.log_path.read_text(encoding="utf-8").splitlines()
