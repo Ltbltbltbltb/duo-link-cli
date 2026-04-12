@@ -10,7 +10,7 @@ from .channel import Channel, DEFAULT_CONTEXT_AGENTS
 from .tasks import TaskStore
 from .worker import worker_loop
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 
 def resolve_channel(explicit: str | None, create_if_missing: bool = False) -> Channel:
@@ -246,6 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_list.add_argument(
         "--limit", type=int, default=0, help="limite de resultados (0=todas)"
     )
+    task_sub.add_parser("stats", help="estatisticas agregadas da fila")
     task_show = task_sub.add_parser("show", help="detalha uma tarefa")
     task_show.add_argument("task_id", type=int)
 
@@ -259,6 +260,11 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run = worker_sub.add_parser("run", help="inicia worker em loop")
     worker_run.add_argument("--target", required=True, help="terminal alvo")
     worker_run.add_argument("--name", default=None, help="nome do worker")
+    worker_run.add_argument(
+        "--notify-to",
+        default=None,
+        help="agente que recebe eventos de lifecycle no canal",
+    )
     worker_run.add_argument("--poll-interval", type=float, default=1.0)
     worker_run.add_argument("--db", default=None, help="arquivo .db ou diretorio do canal")
     worker_run.add_argument(
@@ -615,6 +621,18 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_stats(args: argparse.Namespace) -> int:
+    store = resolve_task_store(args.channel, create_if_missing=True)
+    data = store.stats()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False))
+    else:
+        print(f"total: {data['total']}")
+        print(f"by_status: {json.dumps(data['by_status'], ensure_ascii=False)}")
+        print(f"by_target: {json.dumps(data['by_target'], ensure_ascii=False)}")
+    return 0
+
+
 def cmd_task_retry(args: argparse.Namespace) -> int:
     store = resolve_task_store(args.channel)
     task = store.retry_task(args.task_id)
@@ -646,6 +664,8 @@ def cmd_worker_run(args: argparse.Namespace) -> int:
         worker_name=worker_name,
         poll_interval=args.poll_interval,
         max_iterations=args.max_iterations,
+        notify_to=args.notify_to,
+        notify_session=args.session,
     )
     return 0
 
@@ -775,11 +795,13 @@ def main(argv: list[str] | None = None) -> int:
                 return cmd_task_add(args)
             if args.task_cmd == "list":
                 return cmd_task_list(args)
+            if args.task_cmd == "stats":
+                return cmd_task_stats(args)
             if args.task_cmd == "show":
                 return cmd_task_show(args)
             if args.task_cmd == "retry":
                 return cmd_task_retry(args)
-            parser.error("task exige add, list, show ou retry")
+            parser.error("task exige add, list, stats, show ou retry")
         if args.cmd == "worker":
             if args.worker_cmd == "run":
                 return cmd_worker_run(args)
