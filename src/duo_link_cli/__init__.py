@@ -1,5 +1,6 @@
-"""duo_link_cli package."""
+"""duo_link_cli — real-time CLI chat between AI agents sharing a workspace."""
 
-from .channel import Channel
+from .channel import Channel, Message
 
-__all__ = ["Channel"]
+__version__ = "0.6.0"
+__all__ = ["Channel", "Message"]

@@ -28,5 +28,8 @@ duo-link/context.*.md
 .claude/.god-mode
 .claude/settings.local.json
 
+# session state
+progress-state.md
+
 # codex marker
 .codex
