@@ -981,6 +981,76 @@ class DuoLinkCliTests(unittest.TestCase):
         self.assertEqual(payload["messages"], 2)
         self.assertEqual(payload["agents"], ["claude", "codex"])
 
+    def test_purge_keeps_only_last_n_messages(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "m1")
+        channel.send("codex", "claude", "m2")
+        channel.send("codex", "claude", "m3")
+
+        purge_exit, purge_stdout, purge_stderr = self.run_cli(
+            "purge",
+            "--channel",
+            str(self.channel_dir),
+            "--keep",
+            "2",
+        )
+        self.assertEqual(purge_exit, 0)
+        self.assertEqual(purge_stderr, "")
+        self.assertIn("2 kept", purge_stdout)
+
+        history_exit, history_stdout, history_stderr = self.run_cli(
+            "history",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(history_exit, 0)
+        self.assertEqual(history_stderr, "")
+        payloads = [json.loads(line) for line in history_stdout.splitlines() if line.strip()]
+        self.assertEqual([item["msg"] for item in payloads], ["m2", "m3"])
+        self.assertEqual([item["id"] for item in payloads], [1, 2])
+
+    def test_purge_clears_acked_state_after_renumbering(self) -> None:
+        self.run_cli("init", str(self.channel_dir))
+        channel = Channel(self.channel_dir)
+        channel.send("codex", "claude", "m1")
+        channel.send("codex", "claude", "m2")
+        channel.send("codex", "claude", "m3")
+
+        ack_exit, _, ack_stderr = self.run_cli(
+            "ack",
+            "--as",
+            "claude",
+            "--channel",
+            str(self.channel_dir),
+            "2",
+        )
+        self.assertEqual(ack_exit, 0)
+        self.assertEqual(ack_stderr, "")
+
+        purge_exit, _, purge_stderr = self.run_cli(
+            "purge",
+            "--channel",
+            str(self.channel_dir),
+            "--keep",
+            "1",
+        )
+        self.assertEqual(purge_exit, 0)
+        self.assertEqual(purge_stderr, "")
+
+        status_exit, status_stdout, status_stderr = self.run_cli(
+            "status",
+            "--channel",
+            str(self.channel_dir),
+            "--json",
+        )
+        self.assertEqual(status_exit, 0)
+        self.assertEqual(status_stderr, "")
+        payload = json.loads(status_stdout)
+        self.assertEqual(payload["messages"], 1)
+        self.assertEqual(payload["acked_messages"], 0)
+
     def test_repl_scope_helpers_filter_only_the_selected_peer(self) -> None:
         self.run_cli("init", str(self.channel_dir))
         channel = Channel(self.channel_dir)

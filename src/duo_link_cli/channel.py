@@ -218,6 +218,7 @@ class Channel:
         """Import JSONL data into the channel. Returns count of imported messages."""
         self.init()
         count = 0
+        imported_acked_ids: list[int] = []
         with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
             existing = len(self.log_path.read_text(encoding="utf-8").splitlines())
@@ -234,9 +235,18 @@ class Channel:
                         if "msg" in obj and "text" not in obj:
                             obj["text"] = obj.pop("msg")
                         log_handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        if obj.get("acked") is True:
+                            imported_acked_ids.append(existing)
                         count += 1
                     except (json.JSONDecodeError, TypeError):
                         continue
+            if imported_acked_ids:
+                existing_acks = self.get_acked_ids()
+                merged = sorted(existing_acks | set(imported_acked_ids))
+                self.acks_path.write_text(
+                    "".join(f"{msg_id}\n" for msg_id in merged),
+                    encoding="utf-8",
+                )
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         return count
 

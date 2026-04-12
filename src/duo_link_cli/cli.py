@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .channel import Channel, DEFAULT_CONTEXT_AGENTS
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 
 def resolve_channel(explicit: str | None, create_if_missing: bool = False) -> Channel:

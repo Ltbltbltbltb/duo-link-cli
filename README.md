@@ -141,10 +141,17 @@ O projeto esta funcional e passou por uma auditoria tecnica com melhorias aplica
 
 - transporte JSONL com IDs por mensagem (backward compatible com formato legado)
 - cursor persistente por agente para consumo confiavel de backlog
-- comandos de leitura nao criam canal como side effect
-- REPL escopado ao par de agentes
-- validacao de inputs (timeout, poll_interval, history -n)
+- ACK formal com contagem de pendentes
+- sessoes nomeadas, reply_to para threads
+- drain/pending para gestao de backlog
+- export/import JSONL para backup e migracao
+- purge para limpeza de mensagens antigas
+- stats por agente (sent/received/acked)
+- filtros avancados: --from, --to, --reply-to, --session
+- rotacao de log com arquivamento
+- validacao de inputs e contrato CLI uniforme
 - CI com GitHub Actions (Python 3.10/3.11/3.12)
+- 35 testes cobrindo fluxos felizes e bordas
 
 Ainda nao implementado:
 
