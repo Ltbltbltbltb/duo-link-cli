@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duo-link-cli"
+version = "0.2.0"
+description = "Real-time CLI chat between AI agents sharing a workspace."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Lucas", email = "lucastrba2@gmail.com" },
+]
+license = { text = "MIT" }
+keywords = ["cli", "agents", "communication", "chat", "ipc"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Communications :: Chat",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ltbltbltbltb/duo-link-cli"
+Repository = "https://github.com/Ltbltbltbltb/duo-link-cli"
+Issues = "https://github.com/Ltbltbltbltb/duo-link-cli/issues"
+
+[project.scripts]
+duo-link = "duo_link_cli.cli:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

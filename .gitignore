@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.egg-info/
+*.egg
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+
+# channel runtime data (not part of the package)
+duo-link/chat.log
+duo-link/.chat.lock
+duo-link/context.*.md
+
+# virtual environments
+.venv/
+.venv-*/
+
+# editor / IDE
+.vscode/
+.idea/
+
+# claude code local settings
+.claude/.god-mode
+.claude/settings.local.json
+
+# codex marker
+.codex
