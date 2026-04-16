@@ -267,7 +267,7 @@ Hoje o projeto cobre o caso principal muito bem:
 - prioridades e tipos de mensagem
 - observabilidade por agente, prioridade e tipo
 - CI em Python 3.10/3.11/3.12
-- `43` testes cobrindo fluxos felizes e bordas
+- 72 testes cobrindo fluxos felizes e bordas
 
 Backlog futuro, nao prioritario para o caso real que originou a ferramenta:
 
