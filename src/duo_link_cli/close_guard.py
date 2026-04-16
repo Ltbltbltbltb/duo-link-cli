@@ -89,7 +89,9 @@ def parse_hhmm(value: str) -> tuple[int, int]:
     return int(hour), int(minute)
 
 
-def resolve_window(opener_ts: datetime, start_hhmm: str, end_hhmm: str) -> SessionWindow:
+def resolve_window(
+    opener_ts: datetime, start_hhmm: str, end_hhmm: str
+) -> SessionWindow:
     start_h, start_m = parse_hhmm(start_hhmm)
     end_h, end_m = parse_hhmm(end_hhmm)
 

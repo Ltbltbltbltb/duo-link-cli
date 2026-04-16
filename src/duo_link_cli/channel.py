@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Iterator
 
 DEFAULT_CONTEXT_AGENTS = ("codex", "claude")
+
+# Auto-rotation thresholds (override via env)
+DEFAULT_ROTATE_MAX_MSGS = 5000
+DEFAULT_ROTATE_MAX_BYTES = 5_000_000
+ARCHIVE_DIR_NAME = "archive"
 MESSAGE_RE = re.compile(
     r"^\[(?P<ts>.+?)\] (?P<sender>.+?) -> (?P<recipient>.+?): (?P<text>.*)$"
 )
@@ -184,6 +189,114 @@ class Channel:
             raise FileNotFoundError(f"context not found for agent '{agent}': {path}")
         return path.read_text(encoding="utf-8")
 
+    def _rotate_thresholds(self) -> tuple[int, int]:
+        try:
+            max_msgs = int(
+                os.environ.get("DUO_ROTATE_MAX_MSGS", DEFAULT_ROTATE_MAX_MSGS)
+            )
+        except ValueError:
+            max_msgs = DEFAULT_ROTATE_MAX_MSGS
+        try:
+            max_bytes = int(
+                os.environ.get("DUO_ROTATE_MAX_BYTES", DEFAULT_ROTATE_MAX_BYTES)
+            )
+        except ValueError:
+            max_bytes = DEFAULT_ROTATE_MAX_BYTES
+        return max_msgs, max_bytes
+
+    def _archive_dir(self) -> Path:
+        d = self.root / ARCHIVE_DIR_NAME
+        d.mkdir(exist_ok=True)
+        return d
+
+    def _read_last_id(self) -> int:
+        """Read the highest id across archive + current log to keep ids monotonic."""
+        max_id = 0
+        archive_dir = self.root / ARCHIVE_DIR_NAME
+        if archive_dir.is_dir():
+            for archived in archive_dir.glob("chat.*.log"):
+                try:
+                    with archived.open("rb") as fh:
+                        fh.seek(0, 2)
+                        size = fh.tell()
+                        block = 4096
+                        offset = max(0, size - block)
+                        fh.seek(offset)
+                        tail = fh.read().decode("utf-8", errors="ignore")
+                    for line in reversed(tail.splitlines()):
+                        if not line.strip():
+                            continue
+                        try:
+                            rec = json.loads(line)
+                            rid = int(rec.get("id", 0))
+                            if rid > max_id:
+                                max_id = rid
+                            break
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                except OSError:
+                    continue
+        return max_id
+
+    def _maybe_rotate_locked(self) -> Path | None:
+        """Rotate if thresholds exceeded. Must be called while holding the lock."""
+        max_msgs, max_bytes = self._rotate_thresholds()
+        if max_msgs <= 0 and max_bytes <= 0:
+            return None
+        try:
+            size = self.log_path.stat().st_size
+        except FileNotFoundError:
+            return None
+        if size == 0:
+            return None
+        # quick byte check first (cheap)
+        rotate_needed = max_bytes > 0 and size >= max_bytes
+        # line count only if bytes didn't already trigger (can be expensive)
+        if not rotate_needed and max_msgs > 0:
+            try:
+                with self.log_path.open("rb") as fh:
+                    count = sum(1 for _ in fh)
+            except OSError:
+                count = 0
+            rotate_needed = count >= max_msgs
+        if not rotate_needed:
+            return None
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_dir = self._archive_dir()
+        archive = archive_dir / f"chat.{ts}.log"
+        # if collision, append counter
+        if archive.exists():
+            i = 1
+            while (archive_dir / f"chat.{ts}_{i}.log").exists():
+                i += 1
+            archive = archive_dir / f"chat.{ts}_{i}.log"
+        self.log_path.rename(archive)
+        self.log_path.touch()
+        # reset cursors/consumed — new log, fresh state
+        for cursor_file in self.root.glob(".cursor.*"):
+            try:
+                cursor_file.write_text("0", encoding="utf-8")
+            except OSError:
+                pass
+        for consumed_file in self.root.glob(".consumed.*"):
+            try:
+                consumed_file.write_text("", encoding="utf-8")
+            except OSError:
+                pass
+        # write a marker header in new log pointing to archive, so operators see the break
+        marker = {
+            "id": 0,
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "from": "system",
+            "to": "system",
+            "text": f"ROTATED: previous log archived to {archive.name}",
+            "priority": "low",
+            "type": "rotation-marker",
+        }
+        with self.log_path.open("a", encoding="utf-8") as nh:
+            nh.write(json.dumps(marker, ensure_ascii=False) + "\n")
+        return archive
+
     def send(
         self,
         sender: str,
@@ -198,7 +311,11 @@ class Channel:
         ts = datetime.now().astimezone().isoformat(timespec="seconds")
         with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-            msg_id = len(self.log_path.read_text(encoding="utf-8").splitlines()) + 1
+            # auto-rotate if log exceeds thresholds (holds same lock)
+            self._maybe_rotate_locked()
+            current_lines = len(self.log_path.read_text(encoding="utf-8").splitlines())
+            last_archived = self._read_last_id()
+            msg_id = max(current_lines, last_archived) + 1
             record: dict[str, object] = {
                 "id": msg_id,
                 "ts": ts,
