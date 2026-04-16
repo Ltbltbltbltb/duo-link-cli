@@ -217,6 +217,42 @@ A identidade do agente pode ser resolvida por:
 1. `--as`
 2. `DUO_ID` ou `DUO_AGENT`
 
+## Protocolos
+
+O duo-link inclui protocolos opcionais para melhorar a coordenacao entre agentes:
+
+### DLP-1.3 (Duo-Link Pidgin)
+
+Formato de mensagem estruturado com header protocolar + corpo livre opcional:
+
+```text
+P:DO B:you D:+5m U:mid A:check T:tests S:run N:report | C:roda testes e me avisa.
+```
+
+Campos: `P` (performative), `B` (ownership), `D` (deadline), `U` (urgency), `A` (action), `T` (target), `S` (state), `E` (evidence), `N` (next), `C` (content).
+
+Spec completa: `docs/dlp-1.3-spec.md`
+Linter: `src/duo_link_cli/dlp_lint.py`
+
+### Anti-deadlock (8 regras)
+
+Protocolo para evitar que dois agentes fiquem esperando um ao outro. Inclui:
+- ownership explicito por mensagem
+- deadlines obrigatorios
+- janela como contrato (ninguem sai antes sem consenso)
+- precedencia do operador sobre topicos em andamento
+
+Documentacao: `docs/anti-deadlock.md`
+
+### Close guard
+
+Script que valida se o encerramento de sessao e permitido:
+- `window-elapsed`: janela venceu
+- `mutual-consent`: ambos concordaram em sair antes
+- `user-release`: operador liberou
+
+Uso: `python3 -m duo_link_cli.close_guard --json`
+
 ## Estado do projeto
 
 Hoje o projeto cobre o caso principal muito bem:

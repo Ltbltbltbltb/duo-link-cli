@@ -101,7 +101,24 @@ duo-link send --as claude codex "Vou editar channel.py e tasks.py. Nao toca ness
 
 ## 5. Comunicacao durante o trabalho
 
-### Formato de mensagem
+### Formato de mensagem: DLP-1.3 (recomendado)
+
+Ao usar duo-link, formatar mensagens em DLP-1.3 para reduzir ambiguidade:
+
+```text
+P:<perf> B:<owner> D:<deadline> U:<urgency> A:<action> T:<target> S:<state> [E:<evidence>] [N:<next>] [| C:<max 120 chars>]
+```
+
+Exemplo de handoff:
+```text
+P:DONE B:you D:+5m U:mid A:patch T:channel.py S:ok E:cursor-persistente N:testes | C:implementei cursor. preciso que escreva testes.
+```
+
+Validar antes de enviar: `dlp lint "mensagem"`
+
+Spec completa: `docs/dlp-1.3-spec.md`
+
+### Formato alternativo (NL estruturado)
 
 Toda mensagem deve ter 3 partes:
 1. **O que fez** — "Implementei cursor persistente em channel.py"
@@ -186,6 +203,30 @@ Declarou pronto mas testes nao passavam.
 ```bash
 python3 -m pytest tests/ -q
 ```
+
+### Erro 8: Agente sai antes da janela acabar
+
+Um agente considerou o trabalho feito e saiu, deixando o outro no vacuo.
+
+**Regra (Regra 7):** Janela e contrato. Ninguem sai antes sem CLOSE + ACK bilateral. Se o parceiro nao concordar, ambos ficam ate o fim.
+
+### Erro 9: Ignorar redirecionamento do operador
+
+Agente continuou topico anterior mesmo depois do operador mudar a prioridade.
+
+**Regra (Regra 8):** Instrucao do operador tem precedencia sobre qualquer topico em andamento. Revalidar prioridade antes de continuar thread antiga.
+
+### Erro 10: CLOSE sem evidencia
+
+Agente mandou CLOSE informal sem indicar por que esta fechando.
+
+**Regra:** CLOSE sempre com `E:` indicando `window-elapsed`, `mutual-consent` ou `user-release`. Ver `close_guard` em `src/duo_link_cli/close_guard.py`.
+
+### Erro 11: Puxar parceiro em voo para outra frente
+
+Agente interrompeu o parceiro que estava executando operacao longa.
+
+**Regra:** Declarar in-flight com `P:HOLD B:me D:+Xm U:low A:wait T:<operacao> S:run`. Nao puxar parceiro in-flight sem necessidade.
 
 ## 8. Padroes que funcionaram
 
